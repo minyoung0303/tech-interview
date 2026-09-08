@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>결제 멱등성 시각화 — Idempotency-Key · 경쟁 상태 · 정합 배치</title>
+<meta name="description" content="결제 멱등성을 애니메이션으로 이해하기. 이중 결제가 생기는 경로, Idempotency-Key 흐름, check-then-act 경쟁 상태, 트랜잭션 경계, 상태 머신, 정합 배치.">
+<link rel="stylesheet" href="./assets/base.css">
+<style>
+/* 01 이중 결제 */
+[data-scene="dbl"][data-step="3"] .netlink { background: repeating-linear-gradient(90deg, var(--rose) 0 5px, transparent 5px 10px); }
+[data-scene="dbl"][data-step="3"] .netlink::after { border-left-color: transparent; }
+
+/* 02 멱등 vs 비멱등 */
+.switchbox { display: flex; gap: 22px; flex-wrap: wrap; justify-content: center; }
+.sw {
+  text-align: center;
+  min-width: 150px;
+}
+.sw .face {
+  font-size: 30px;
+  line-height: 1.4;
+  font-family: var(--mono);
+  font-weight: 800;
+  transition: color .4s var(--ease);
+}
+.sw .face.ok { color: var(--green); }
+.sw .face.bad { color: var(--rose); }
+.sw .cap { font-size: 12px; color: var(--ink-3); }
+
+/* 03 키 흐름 */
+.krow {
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 11px;
+  align-items: start;
+  padding: 10px 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: rgba(255,255,255,.02);
+  font-size: 13.5px;
+  transition: all .45s var(--ease);
+}
+.krow .no { font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-weight: 700; }
+.krow.on { border-color: rgba(94,231,245,.5); background: rgba(94,231,245,.07); }
+.krow.on .no { color: var(--cyan); }
+.krow.dup { border-color: rgba(251,191,36,.5); background: rgba(251,191,36,.07); }
+.krow.dup .no { color: var(--amber); }
+.krow.past { opacity: .5; }
+
+/* 05 트랜잭션 경계 */
+.conn { display: grid; grid-template-columns: 96px 1fr; gap: 10px; align-items: center; margin-top: 6px; }
+.conn .nm { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.holdbar { height: 12px; border-radius: 999px; background: rgba(255,255,255,.05); border: 1px solid var(--line-soft); overflow: hidden; }
+.holdbar > span { display: block; height: 100%; width: 0; transition: width .9s linear; }
+.holdbar.bad > span { background: linear-gradient(90deg, var(--amber), var(--rose)); }
+.holdbar.good > span { background: linear-gradient(90deg, var(--cyan), var(--green)); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#s1">본문으로 건너뛰기</a>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="home" href="./index.html">visualize<span>/</span>backend</a>
+    <nav aria-label="주제 바로가기">
+      <a href="./transaction.html">트랜잭션</a>
+      <a href="./db-index.html">인덱스</a>
+      <a href="./proxy.html">프록시</a>
+      <a href="./idempotency.html" aria-current="page">멱등성</a>
+      <a href="./deployment.html">배포</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero wrap">
+    <p class="eyebrow">04 · Idempotency</p>
+    <h1><em>결제 멱등성</em><br>중복을 막는 게 아니라, 흡수한다</h1>
+    <p>
+      이 주제는 성격이 다릅니다. <b>암기 지식이 아니라 설계 사고를 보는 질문</b>입니다.
+      "돈이 두 번 빠지면 안 된다"를 어떻게 풀어내는지 보는 것이고,
+      신입·주니어가 여기서 제대로 답하면 <b>가장 크게 점수가 뛰는 주제</b>입니다.
+    </p>
+    <div class="hero-meta">
+      <span class="chip amber">MySQL · UNIQUE 제약</span>
+      <span class="chip rose">Redis</span>
+      <span class="chip green">AWS SQS</span>
+      <span class="chip violet">Go / Echo</span>
+      <span class="chip">7장면</span>
+    </div>
+  </section>
+
+  <nav class="scene-nav" aria-label="장면 목차">
+    <div class="wrap">
+      <a href="#s1">01 이중 결제</a>
+      <a href="#s2">02 정의</a>
+      <a href="#s3">03 Idempotency-Key</a>
+      <a href="#s4">04 경쟁 상태</a>
+      <a href="#s5">05 트랜잭션 경계</a>
+      <a href="#s6">06 상태 머신</a>
+      <a href="#s7">07 정합 배치</a>
+      <a href="#s8">웹훅</a>
+      <a href="#s9">개념 정리</a>
+      <a href="#s10">정리</a>
+    </div>
+  </nav>
+
+  <div class="wrap scenes">
+
+    <!-- ============ 01 이중 결제 ============ -->
+    <section class="scene" id="s1" data-scene="dbl" data-steps="5" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">01</span>
+        <h2>이중 결제는 <em>실패</em>가 아니라 <em>응답 유실</em>에서 생긴다</h2>
+        <p class="scene-lead">
+          이게 핵심 통찰입니다. <b>클라이언트는 "실패"와 "응답 유실"을 구분할 수 없습니다.</b>
+          그래서 재시도는 불가피하고, 서버가 멱등해야 합니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="row-flex" style="gap:9px">
+          <div class="node cyan">클라이언트</div>
+          <div class="arrow cyan netlink" style="max-width:74px"><span class="pulse" data-at="1,4"></span></div>
+          <div class="node">우리 서버</div>
+          <div class="arrow green" style="max-width:74px"><span class="pulse" data-at="2,5" style="background:var(--green);box-shadow:0 0 12px 2px rgba(69,217,154,.6)"></span></div>
+          <div class="node green">PG</div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px;gap:8px">
+          <span class="lbl cyan" data-at="1">1) 결제 요청 10,000원</span>
+          <span class="lbl green" data-at="2">2) PG 승인 성공 + DB 저장 완료</span>
+          <span class="lbl rose" data-at="3">3) 💥 응답이 유실된다 (타임아웃)</span>
+          <span class="lbl amber" data-at="4">4) 클라이언트는 실패로 판단 → 같은 요청 재시도</span>
+          <span class="lbl rose" data-at="5">5) PG가 또 승인한다</span>
+        </div>
+
+        <div class="row-flex center" style="margin-top:20px;gap:20px">
+          <div class="counter" style="text-align:center">
+            <span class="morph" style="min-width:6ch">
+              <span data-until="1">10,000</span>
+              <span data-from="2">10,000</span>
+            </span>
+            <small>사용자가 결제하려던 금액</small>
+          </div>
+          <span style="color:var(--ink-3);font-size:20px">vs</span>
+          <div class="counter" style="text-align:center">
+            <span class="morph bad" style="min-width:6ch">
+              <span data-until="1" style="color:var(--ink-3)">0</span>
+              <span data-at="2,3,4" style="color:var(--ink-2)">10,000</span>
+              <span data-from="5" style="color:var(--rose)">20,000</span>
+            </span>
+            <small>실제로 빠져나간 금액</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>사용자가 결제 버튼을 누릅니다. 10,000원 한 번입니다.</p>
+        <p data-cap="2"><span class="k">02</span>서버는 PG 승인까지 <b>정상적으로 성공</b>시키고 DB에도 저장했습니다.</p>
+        <p data-cap="3"><span class="k">03</span>응답이 돌아오는 길에 유실됩니다. <b>서버는 성공, 클라이언트는 모름.</b></p>
+        <p data-cap="4"><span class="k">04</span>클라이언트가 재시도합니다. 이 판단은 <b>합리적이고 막을 수 없습니다.</b></p>
+        <p data-cap="5"><span class="k">05</span>서버가 멱등하지 않으면 두 번째도 처리됩니다. <b>20,000원이 빠졌습니다.</b></p>
+      </div>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">중복이 생기는 경로 5가지 — 구체적으로 나열하면 설득력이 확 올라갑니다</h3>
+      <ul class="checklist">
+        <li><b>① 네트워크 타임아웃 후 재시도</b> (가장 중요) — 위 장면 그대로입니다</li>
+        <li><b>② 사용자의 중복 클릭</b> — 프론트 버튼 비활성화는 UX 보완이고, <b>방어는 서버에서</b> 해야 합니다. API를 직접 호출할 수 있으니까요</li>
+        <li><b>③ PG 웹훅 중복 발송</b> — PG는 웹훅에 <b>at-least-once</b>를 보장합니다. 우리가 200을 늦게 주면 같은 이벤트를 여러 번 보냅니다. <b>PG 버그가 아니라 정상 동작</b>입니다</li>
+        <li><b>④ 메시지 큐의 at-least-once</b> — SQS Standard는 <b>중복 수신이 정상</b>입니다. <code>DeleteMessage</code> 전에 컨슈머가 죽거나, 처리 시간이 visibility timeout보다 길면 재전달됩니다</li>
+        <li><b>⑤ 로드밸런서/게이트웨이 레벨 재시도</b> — 프록시가 타임아웃으로 판단해 다른 인스턴스로 재시도합니다. 백엔드는 이미 처리 중일 수 있습니다</li>
+      </ul>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>SQS FIFO의 중복 제거로 충분한가요? — 아닙니다.</b></p>
+          <p>
+            <code>MessageDeduplicationId</code>는 <b>5분 이내</b> 중복만 제거합니다.
+            5분을 넘기면 다시 중복될 수 있고 처리량 제한도 있어서
+            <b>애플리케이션 멱등성을 대체하지 않습니다.</b>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 02 정의 ============ -->
+    <section class="scene" id="s2" data-scene="defn" data-steps="3" data-speed="2100">
+      <header class="scene-head">
+        <span class="scene-num">02</span>
+        <h2>멱등성 = 몇 번 실행해도 <em>결과 상태</em>가 한 번 실행한 것과 같다</h2>
+        <p class="scene-lead">
+          수학에서 <code>f(f(x)) = f(x)</code>인 성질과 같습니다. 스위치와 카운터로 비교해봅니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="switchbox">
+          <div class="sw">
+            <div class="face ok">
+              <span class="morph" style="min-width:6ch">
+                <span data-until="1">OFF</span>
+                <span data-from="2">ON</span>
+              </span>
+            </div>
+            <p class="cap"><b style="color:var(--green)">멱등</b> — "켜라"를 3번 보내도 결과는 ON</p>
+            <p class="cap" style="margin-top:6px"><span class="lbl green">PUT / DELETE / GET</span></p>
+          </div>
+
+          <div class="sw">
+            <div class="face bad">
+              <span class="morph" style="min-width:6ch">
+                <span data-until="1">0</span>
+                <span data-at="2">1</span>
+                <span data-from="3">3</span>
+              </span>
+            </div>
+            <p class="cap"><b style="color:var(--rose)">비멱등</b> — "하나 더해라"를 3번 보내면 3</p>
+            <p class="cap" style="margin-top:6px"><span class="lbl rose">POST / PATCH(증분)</span></p>
+          </div>
+        </div>
+
+        <table class="tbl" style="margin-top:20px" data-from="3">
+          <thead><tr><th>메서드</th><th>멱등</th><th>안전(safe)</th><th>비고</th></tr></thead>
+          <tbody>
+            <tr><td>GET / HEAD</td><td class="mark">O</td><td class="mark">O</td><td>상태를 안 바꾼다</td></tr>
+            <tr><td>PUT</td><td class="mark">O</td><td>X</td><td>같은 값으로 덮어쓰므로 결과가 같다</td></tr>
+            <tr><td>DELETE</td><td class="mark">O</td><td>X</td><td>두 번 지워도 없는 상태는 같다 (응답 코드는 달라질 수 있다)</td></tr>
+            <tr class="locked"><td>POST</td><td><b>X</b></td><td>X</td><td>호출마다 새 리소스가 생긴다</td></tr>
+            <tr class="locked"><td>PATCH</td><td><b>X</b></td><td>X</td><td><code>{"amount":"+100"}</code> 같은 증분 연산이면 멱등하지 않다</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>왼쪽은 스위치("ON으로 설정"), 오른쪽은 카운터("1 증가")입니다.</p>
+        <p data-cap="2"><span class="k">02</span>같은 요청을 한 번 보냅니다. 결과는 ON, 1.</p>
+        <p data-cap="3"><span class="k">03</span>세 번 보내면? 스위치는 여전히 ON, 카운터는 3. <b>이 차이가 멱등성입니다.</b></p>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>"DELETE가 멱등인데 두 번째 호출이 404면 멱등성이 깨진 건가요?" — 아닙니다.</b></p>
+          <p>
+            멱등성은 <b>결과 상태</b> 기준입니다. 첫 호출이 204, 두 번째가 404여도
+            "리소스가 없다"는 상태는 같으므로 멱등성이 유지됩니다. 응답 코드가 아니라 상태를 봅니다.
+          </p>
+          <p>
+            그리고 <b>결제는 보통 POST입니다.</b> 프로토콜이 멱등성을 보장해주지 않으니 직접 만들어야 하고,
+            그 표준적인 방법이 다음 장면의 <code>Idempotency-Key</code>입니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 03 Idempotency-Key ============ -->
+    <section class="scene" id="s3" data-scene="keyflow" data-steps="6" data-speed="2000">
+      <header class="scene-head">
+        <span class="scene-num">03</span>
+        <h2><code>Idempotency-Key</code> — 첫 요청은 처리하고, 재요청은 <em>저장된 응답을 재생</em>한다</h2>
+        <p class="scene-lead">
+          Stripe, 토스페이먼츠 등이 모두 쓰는 표준 패턴입니다.
+          <b>클라이언트가 키를 생성하고, 재시도할 때 같은 키를 다시 씁니다.</b> 이게 전제 조건입니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="col-flex" style="gap:7px">
+          <div class="krow" id="k1">
+            <span class="no">1</span>
+            <span>클라이언트가 요청마다 고유 키를 만들어 헤더에 담는다<br>
+              <code style="color:var(--cyan)">Idempotency-Key: 550e8400-e29b-41d4-a716-446655440000</code></span>
+          </div>
+          <div class="krow" id="k2">
+            <span class="no">2</span>
+            <span>서버가 <code>idempotency_keys</code>에 <code>(키, 요청 해시, IN_PROGRESS)</code> INSERT를 <b>시도</b>한다</span>
+          </div>
+          <div class="krow" id="k3">
+            <span class="no">3</span>
+            <span><b style="color:var(--green)">INSERT 성공 → 첫 요청이다.</b> 실제 결제를 처리한다</span>
+          </div>
+          <div class="krow" id="k4">
+            <span class="no">4</span>
+            <span>결과와 응답 본문을 저장하고 <code>SUCCEEDED</code>로 갱신 → 클라이언트에 응답</span>
+          </div>
+          <div class="krow" id="k5">
+            <span class="no">5</span>
+            <span>같은 키로 재시도가 도착한다 → INSERT가 <b style="color:var(--amber)">duplicate key(1062)</b>로 실패한다</span>
+          </div>
+          <div class="krow" id="k6">
+            <span class="no">6</span>
+            <span><b style="color:var(--cyan)">저장된 응답을 그대로 반환한다. 결제는 다시 실행하지 않는다</b><br>
+              <code>Idempotent-Replay: true</code></span>
+          </div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px;gap:8px">
+          <span class="lbl green" data-at="4">PG 승인 1회 · 응답 200 저장 완료</span>
+          <span class="lbl amber" data-at="5">IN_PROGRESS 라면? → 409 Conflict + Retry-After</span>
+          <span class="lbl cyan" data-at="6">PG 승인 총 1회 — 이중 결제 없음 ✅</span>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>키는 <b>클라이언트가</b> 만듭니다. 재시도 시 같은 키를 재사용하는 게 전제입니다.</p>
+        <p data-cap="2"><span class="k">02</span>서버는 조회하지 않고 <b>바로 INSERT를 시도</b>합니다. 이유는 다음 장면에서 나옵니다.</p>
+        <p data-cap="3"><span class="k">03</span>INSERT가 성공했다는 것 자체가 "내가 첫 번째다"라는 증명입니다.</p>
+        <p data-cap="4"><span class="k">04</span>응답 본문까지 저장해둡니다. 나중에 <b>그대로 재생</b>하기 위해서입니다.</p>
+        <p data-cap="5"><span class="k">05</span>재시도가 오면 INSERT가 <b>1062</b>로 실패합니다. 이 에러를 <b>정상 흐름으로</b> 처리합니다.</p>
+        <p data-cap="6"><span class="k">06</span>저장된 응답을 재생합니다. PG 승인은 총 1회. <b>중복을 막은 게 아니라 흡수했습니다.</b></p>
+      </div>
+
+      <pre class="code"><span class="k">CREATE TABLE</span> idempotency_keys (
+  id            <span class="k">BIGINT</span>      <span class="k">NOT NULL</span> <span class="k">AUTO_INCREMENT</span>,
+  idem_key      <span class="k">VARCHAR</span>(<span class="n">64</span>) <span class="k">NOT NULL</span>,
+  <span class="c">-- 같은 키로 다른 내용을 보내는 걸 막기 위한 요청 본문 해시</span>
+  request_hash  <span class="k">CHAR</span>(<span class="n">64</span>)    <span class="k">NOT NULL</span>,
+  <span class="c">-- 키를 사용자별로 격리한다. 남의 키를 추측해 응답을 훔쳐보는 걸 막는다</span>
+  user_id       <span class="k">BIGINT</span>      <span class="k">NOT NULL</span>,
+  status        <span class="k">ENUM</span>(<span class="s">'IN_PROGRESS'</span>,<span class="s">'SUCCEEDED'</span>,<span class="s">'FAILED'</span>) <span class="k">NOT NULL</span>,
+  response_code <span class="k">INT</span>         <span class="k">NULL</span>,
+  response_body <span class="k">JSON</span>        <span class="k">NULL</span>,
+  created_at    <span class="k">DATETIME</span>(<span class="n">6</span>) <span class="k">NOT NULL DEFAULT</span> <span class="k">CURRENT_TIMESTAMP</span>(<span class="n">6</span>),
+  <span class="k">PRIMARY KEY</span> (id),
+  <span class="hl">  <span class="c">-- ★ 여기가 멱등성의 실제 방어선이다</span></span>
+  <span class="hl">  <span class="k">UNIQUE KEY</span> uk_user_idem (user_id, idem_key),</span>
+  <span class="k">KEY</span> idx_created_at (created_at)   <span class="c">-- 만료 레코드 정리용</span>
+) ENGINE=InnoDB;</pre>
+
+      <div class="split" style="margin-top:16px">
+        <div class="pane">
+          <h4>왜 request_hash가 필요한가</h4>
+          <pre class="code" style="margin-top:0"><span class="c">1차:</span> Key: abc, body: {<span class="s">"amount"</span>: <span class="n">10000</span>}  → 성공
+<span class="c">2차:</span> Key: abc, body: {<span class="s">"amount"</span>: <span class="n">99000</span>}
+  <span class="bad">→ 키가 같다는 이유로 10,000원 결제 응답을</span>
+  <span class="bad">   돌려주면 버그다</span></pre>
+          <p style="margin:10px 0 0;font-size:13px;color:var(--ink-2)">
+            키는 같은데 해시가 다르면 <b style="color:var(--rose)">422 Unprocessable Entity</b>로 거부합니다.
+            Stripe도 이렇게 합니다.
+          </p>
+        </div>
+        <div class="pane">
+          <h4>왜 IN_PROGRESS 상태가 필요한가</h4>
+          <p style="margin:0;font-size:13.5px;color:var(--ink-2)">
+            이 상태가 없으면, 동시에 들어온 두 요청 중 두 번째가
+            <b>"레코드는 있는데 응답이 없다"</b>는 상황에 빠져 무엇을 반환해야 할지 알 수 없습니다.
+          </p>
+          <p style="margin:10px 0 0;font-size:13.5px;color:var(--ink-2)">
+            진행 중임을 명시하고 <b style="color:var(--amber)">409 + Retry-After</b>로 재시도를 안내하는 게 정확한 처리입니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 04 경쟁 상태 ============ -->
+    <section class="scene" id="s4" data-scene="race" data-steps="5" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">04</span>
+        <h2>가장 흔한 오류 — <em>"조회해서 없으면 INSERT"</em></h2>
+        <p class="scene-lead">
+          <b>확인 후 행동(check-then-act)은 원자적이지 않습니다.</b>
+          두 요청이 동시에 들어오는 상황을 나란히 돌려봅니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="split">
+          <div class="pane bad">
+            <h4>❌ 애플리케이션에서 체크</h4>
+            <div class="lanes">
+              <div class="lane">
+                <span class="who">R1</span>
+                <div class="track">
+                  <span class="ev cyan" style="left:22%" data-from="1">SELECT → 없다</span>
+                  <span class="ev rose" style="left:72%" data-from="3">INSERT + 결제</span>
+                </div>
+              </div>
+              <div class="lane">
+                <span class="who">R2</span>
+                <div class="track">
+                  <span class="ev violet" style="left:30%" data-from="2">SELECT → 없다</span>
+                  <span class="ev rose" style="left:80%" data-from="4">INSERT + 결제</span>
+                </div>
+              </div>
+            </div>
+            <p style="margin:12px 0 0;font-size:13.5px;color:var(--ink-2)">
+              두 요청이 <b style="color:var(--rose)">둘 다 "없다"고 판단</b>합니다.
+              그 사이에는 아무 보호 장치가 없습니다.
+            </p>
+            <p style="margin:8px 0 0"><span class="lbl rose" data-from="5">PG 승인 2회 → 이중 결제</span></p>
+          </div>
+
+          <div class="pane good">
+            <h4>✅ DB 유니크 제약이 판정</h4>
+            <div class="lanes">
+              <div class="lane">
+                <span class="who">R1</span>
+                <div class="track">
+                  <span class="ev green" style="left:26%" data-from="1">INSERT 성공</span>
+                  <span class="ev green" style="left:74%" data-from="3">결제 처리</span>
+                </div>
+              </div>
+              <div class="lane">
+                <span class="who">R2</span>
+                <div class="track">
+                  <span class="ev amber" style="left:34%" data-from="2">INSERT → 1062</span>
+                  <span class="ev cyan" style="left:80%" data-from="4">409 / 응답 재생</span>
+                </div>
+              </div>
+            </div>
+            <p style="margin:12px 0 0;font-size:13.5px;color:var(--ink-2)">
+              유니크 제약은 <b style="color:var(--green)">DB 엔진이 원자적으로 판정</b>하므로
+              경쟁 상태가 원천적으로 생기지 않습니다.
+            </p>
+            <p style="margin:8px 0 0"><span class="lbl green" data-from="5">PG 승인 1회 ✅</span></p>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>같은 키를 가진 두 요청 R1, R2가 거의 동시에 도착합니다.</p>
+        <p data-cap="2"><span class="k">02</span>왼쪽은 둘 다 "없다"를 읽습니다. 오른쪽은 R2의 INSERT가 <b>즉시 거절</b>됩니다.</p>
+        <p data-cap="3"><span class="k">03</span>왼쪽 R1이 결제를 진행합니다. 오른쪽도 R1만 진행합니다.</p>
+        <p data-cap="4"><span class="k">04</span>왼쪽 R2도 결제를 진행해버립니다. 오른쪽 R2는 409나 저장된 응답을 돌려줍니다.</p>
+        <p data-cap="5"><span class="k">05</span>결과가 갈립니다. <b>판정을 어디서 하느냐가 전부</b>입니다.</p>
+      </div>
+
+      <pre class="code"><span class="c">// ❌ 이 코드는 경쟁 상태에 뚫린다</span>
+row := db.QueryRow(<span class="s">"SELECT id FROM idempotency_keys WHERE idem_key = ?"</span>, key)
+<span class="k">if</span> row.Scan(...) == sql.ErrNoRows {
+   <span class="bad">// ★ 두 요청이 동시에 여기 도달하면 둘 다 "없다"고 판단한다</span>
+   db.Exec(<span class="s">"INSERT INTO idempotency_keys ..."</span>)
+   처리()
+}
+
+<span class="c">// ✅ 먼저 INSERT를 시도하고, duplicate key 에러를 정상 흐름으로 처리한다</span>
+<span class="k">const</span> mysqlErrDupEntry = <span class="n">1062</span>
+
+_, err = db.ExecContext(ctx, <span class="s">`INSERT INTO idempotency_keys
+        (idem_key, user_id, request_hash, status)
+ VALUES (?, ?, ?, 'IN_PROGRESS')`</span>, key, userID, reqHash)
+
+<span class="k">if</span> err != <span class="k">nil</span> {
+   <span class="k">if</span> !isDupEntry(err) { <span class="k">return</span> err }
+   <span class="c">// 중복 → 기존 레코드를 보고 판단 (해시 비교 → 상태 확인 → 응답 재생)</span>
+}</pre>
+
+      <div class="warn">
+        <p><b>Redis는 최종 방어선이 될 수 없습니다.</b></p>
+        <p style="margin-top:6px">
+          Redis를 쓰면 안 되는 게 아니라, <b>Redis만 쓰면 안 됩니다.</b>
+          기본이 비동기 복제라 마스터가 죽으면 아직 복제되지 않은 키가 유실되고,
+          TTL이 만료되면 키가 사라지고, 메모리 부족 시 eviction으로 쫓겨날 수 있습니다.
+        </p>
+        <p style="margin-top:6px">
+          <b>돈이 걸린 판정에는 영속적이고 트랜잭션이 보장되는 DB 유니크 제약을 씁니다.</b>
+          Redis는 DB 부하를 줄이는 앞단 필터(<code>SET NX</code>)로 쓰는 게 올바른 역할 분담입니다.
+          Redis 분산 락(Redlock)도 마찬가지입니다. 네트워크 지연과 GC 정지 때문에
+          락 만료 후에도 이전 소유자가 작업을 계속하는 상황을 완전히 막을 수 없습니다.
+          <b>락으로 정합성을 보장하려 하지 말고, 최종 상태를 DB 제약으로 보장합니다.</b>
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ 05 트랜잭션 경계 ============ -->
+    <section class="scene" id="s5" data-scene="txb" data-steps="4" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">05</span>
+        <h2>외부 API가 끼어들면 <em>트랜잭션 경계를 쪼갠다</em></h2>
+        <p class="scene-lead">
+          핵심은 하나입니다. <b>외부 호출 전에 의도를 먼저 커밋해둔다.</b>
+          그러면 어느 시점에 죽어도 추적 가능한 흔적이 남습니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="split">
+          <div class="pane bad">
+            <h4>❌ 트랜잭션 안에서 PG 호출</h4>
+            <pre class="code" style="margin-top:0"><span class="bad">tx 시작</span>
+  → 주문 저장
+  → PG 승인 API 호출 <span class="c">(3초)</span>
+  → 결과 저장
+  → 커밋</pre>
+            <div class="conn">
+              <span class="nm">DB 커넥션 점유</span>
+              <div class="holdbar bad"><span id="hb1"></span></div>
+            </div>
+            <ul style="margin:12px 0 0;padding-left:19px;font-size:13px;color:var(--ink-2);line-height:1.8">
+              <li>커넥션과 락을 3초간 점유 → <b style="color:var(--rose)">커넥션 풀 고갈</b></li>
+              <li><b style="color:var(--rose)">외부 호출은 롤백되지 않는다.</b> DB가 롤백돼도 결제는 승인된 채 남는다</li>
+            </ul>
+          </div>
+
+          <div class="pane good">
+            <h4>✅ 쪼개고 상태 머신으로 관리</h4>
+            <pre class="code" style="margin-top:0"><span class="s">tx1</span>: 주문을 PENDING으로 저장 + 커밋
+     <span class="c">← 의도를 먼저 기록한다</span>
+  → PG 승인 API 호출 <span class="c">(트랜잭션 밖)</span>
+<span class="s">tx2</span>: 결과에 따라 PAID / FAILED + 커밋</pre>
+            <div class="conn">
+              <span class="nm">DB 커넥션 점유</span>
+              <div class="holdbar good"><span id="hb2"></span></div>
+            </div>
+            <p style="margin:12px 0 0;font-size:13px;color:var(--ink-2)">
+              커넥션은 두 번 짧게만 잡습니다. 그 사이 3초는 <b style="color:var(--green)">커넥션을 반납한 상태</b>입니다.
+            </p>
+          </div>
+        </div>
+
+        <div style="margin-top:16px" data-from="4">
+          <div class="warn" style="margin-top:0">
+            <p><b>tx2 직전에 서버가 죽으면? → PENDING으로 남습니다.</b></p>
+            <p style="margin-top:6px">
+              이건 <b>"유실"이 아니라 "미확정"</b>입니다. 기록이 남아 있으니 나중에 맞출 수 있습니다.
+              PENDING이 N분 이상 지속된 건을 PG 조회 API로 확인해 맞추는 게 <b>정합 배치</b>입니다 (07장면).
+              <b>이 설계를 설명할 수 있으면 신입 수준을 넘습니다.</b>
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>같은 결제 처리를 두 가지 트랜잭션 경계로 구현합니다.</p>
+        <p data-cap="2"><span class="k">02</span>PG 호출이 시작됩니다. 왼쪽은 커넥션을 계속 붙잡고 있습니다.</p>
+        <p data-cap="3"><span class="k">03</span>3초가 흐릅니다. 왼쪽은 그동안 커넥션 하나가 완전히 묶여 있었습니다.</p>
+        <p data-cap="4"><span class="k">04</span>쪼갠 쪽의 진짜 이득은 성능이 아니라 <b>어느 시점에 죽어도 흔적이 남는다</b>는 것입니다.</p>
+      </div>
+    </section>
+
+    <!-- ============ 06 상태 머신 ============ -->
+    <section class="scene" id="s6" data-scene="fsm" data-steps="5" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">06</span>
+        <h2>웹훅은 <em>순서가 뒤바뀌어</em> 도착한다 — 상태 머신으로 역행을 막는다</h2>
+        <p class="scene-lead">
+          <code>PAID</code> 다음에 <code>PENDING</code>이 도착하는 일이 실제로 있습니다.
+          전이 규칙을 코드로 강제하고, 상태 전이 자체를 <b>조건부 UPDATE로 원자화</b>합니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="fsm">
+          <span class="st" id="f1">CREATED</span>
+          <span class="to">→</span>
+          <span class="st" id="f2">PENDING</span>
+          <span class="to">→</span>
+          <span class="st" id="f3">PAID</span>
+          <span class="to">→</span>
+          <span class="st" id="f4">REFUNDED</span>
+        </div>
+        <div class="fsm" style="margin-top:10px;padding-left:2px">
+          <span class="lbl">PENDING에서 갈라지는 곳:</span>
+          <span class="st" style="font-size:11px;padding:4px 9px">FAILED</span>
+          <span class="st" style="font-size:11px;padding:4px 9px">EXPIRED</span>
+        </div>
+
+        <div class="row-flex" style="margin-top:20px;gap:10px">
+          <div class="node green" data-from="1">PG 웹훅 #1<small>status = PAID</small></div>
+          <div class="arrow green" style="max-width:64px" data-from="1"><span class="pulse" style="background:var(--green);box-shadow:0 0 12px 2px rgba(69,217,154,.6)"></span></div>
+          <div class="node cyan" data-from="1">우리 서버</div>
+          <div class="arrow rose cut" style="max-width:64px" data-from="4"></div>
+          <div class="node rose" data-from="3">PG 웹훅 #2<small>status = PENDING (늦게 도착)</small></div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px;gap:8px">
+          <span class="lbl" data-at="1">주문 생성 → PENDING</span>
+          <span class="lbl green" data-at="2">PAID 웹훅 처리 완료</span>
+          <span class="lbl amber" data-at="3">지연된 PENDING 웹훅이 뒤늦게 도착</span>
+          <span class="lbl rose" data-at="4">PAID → PENDING 역행은 허용되지 않는다 → 무시</span>
+          <span class="lbl cyan" data-at="5">조건부 UPDATE 한 줄로 원자화한다</span>
+        </div>
+
+        <pre class="code" data-from="5"><span class="c">-- WHERE에 현재 상태를 넣으면 동시 갱신을 DB가 걸러준다.</span>
+<span class="k">UPDATE</span> payments
+   <span class="k">SET</span> status = <span class="s">'PAID'</span>, paid_at = <span class="k">NOW</span>(<span class="n">6</span>), pg_tid = ?
+ <span class="k">WHERE</span> id = ? <span class="k">AND</span> <span class="hl">status = <span class="s">'PENDING'</span></span>;
+
+<span class="c">-- RowsAffected() == 0 이면 이미 누군가 처리했다는 뜻 → 조용히 성공 응답</span>
+<span class="c">-- ★ 이 한 줄짜리 기법이 웹훅 멱등 처리의 대부분을 해결한다</span></pre>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>주문이 생성되고 PENDING 상태가 됩니다.</p>
+        <p data-cap="2"><span class="k">02</span><code>PAID</code> 웹훅이 도착해 정상 처리됩니다.</p>
+        <p data-cap="3"><span class="k">03</span>그런데 <b>더 오래된</b> <code>PENDING</code> 웹훅이 뒤늦게 도착합니다. 재전송 때문입니다.</p>
+        <p data-cap="4"><span class="k">04</span>그대로 반영하면 결제 완료가 대기 상태로 <b>되돌아갑니다.</b> 전이 규칙이 이걸 막습니다.</p>
+        <p data-cap="5"><span class="k">05</span>규칙을 코드로만 두지 말고 <b>UPDATE의 WHERE 절</b>에도 넣어 동시성까지 막습니다.</p>
+      </div>
+
+      <pre class="code"><span class="k">var</span> allowed = <span class="k">map</span>[Status][]Status{
+   StatusCreated: {StatusPending, StatusFailed},
+   StatusPending: {StatusPaid, StatusFailed, StatusExpired},
+   StatusPaid:    {StatusRefunded},
+   StatusFailed:  {},        <span class="c">// 종료 상태</span>
+   StatusRefunded:{},        <span class="c">// 종료 상태</span>
+}
+
+<span class="k">func</span> canTransit(from, to Status) <span class="k">bool</span> {
+   <span class="k">return</span> slices.Contains(allowed[from], to)
+}</pre>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>조건부 UPDATE는 낙관적 락과 같은 원리입니다.</b></p>
+          <p>
+            <code>WHERE status = 'PENDING'</code>은 "내가 읽은 상태가 아직 그대로일 때만 바꿔라"는 뜻입니다.
+            <a href="./transaction.html#s6">트랜잭션 편의 Lost Update 해결책</a>과 동일한 사고이고,
+            여기서는 <code>version</code> 대신 <code>status</code>를 쓰는 것입니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 07 정합 배치 ============ -->
+    <section class="scene" id="s7" data-scene="recon" data-steps="4" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">07</span>
+        <h2>정합 배치 — <em>어긋난 걸 발견하고 맞추는 장치</em>를 둔다</h2>
+        <p class="scene-lead">
+          이 문장 자체가 좋은 답변이 됩니다.
+          <b>"장애를 완전히 없앨 수는 없으니, 어긋난 걸 발견하고 맞추는 장치를 둔다."</b>
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="flowv">
+          <div class="fstep" id="r1">
+            <span class="no">1</span>
+            <span><code>status = 'PENDING'</code>이고 <code>created_at</code>이 10분 이상 지난 건을 조회</span>
+          </div>
+          <div class="fstep" id="r2">
+            <span class="no">2</span>
+            <span>각 건에 대해 <b>PG 조회 API</b>로 실제 상태를 확인</span>
+          </div>
+          <div class="fstep" id="r3">
+            <span class="no">3</span>
+            <span>
+              PG에 승인 기록이 있다 → <b style="color:var(--green)">PAID로 갱신</b> (우리가 놓친 것)<br>
+              PG에 기록이 없다 → <b style="color:var(--amber)">EXPIRED / FAILED로 갱신</b><br>
+              PG는 승인인데 상품이 안 나갔다 → <b style="color:var(--rose)">알림 + 수동 확인 대상</b>
+            </span>
+          </div>
+          <div class="fstep" id="r4">
+            <span class="no">4</span>
+            <span>일 단위로 <b>PG 거래 내역 전체와 우리 DB를 대조</b>해 차이를 리포트</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>미확정 상태를 그대로 두지 않고 주기적으로 긁어옵니다.</p>
+        <p data-cap="2"><span class="k">02</span><b>진실의 원천은 PG</b>입니다. 우리 추측이 아니라 PG에 물어봅니다.</p>
+        <p data-cap="3"><span class="k">03</span>세 갈래로 처리합니다. 세 번째는 자동화하지 않고 <b>사람이 봅니다.</b></p>
+        <p data-cap="4"><span class="k">04</span>일 단위 전체 대조로 놓친 게 없는지 확인합니다. 돈을 다루는 시스템의 기본입니다.</p>
+      </div>
+
+      <pre class="code"><span class="c">-- 만료된 멱등 키 정리. 보관 기간은 PG 재시도 윈도우보다 길게 (보통 24시간~7일)</span>
+<span class="k">DELETE FROM</span> idempotency_keys
+ <span class="k">WHERE</span> created_at &lt; <span class="k">NOW</span>() - <span class="k">INTERVAL</span> <span class="n">7</span> <span class="k">DAY</span>
+ <span class="k">LIMIT</span> <span class="n">1000</span>;   <span class="c">-- 한 번에 다 지우면 락이 길어진다. 나눠서 반복 실행</span></pre>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b><code>LIMIT</code>으로 쪼개는 이유까지 말하면 실무 감각으로 읽힙니다.</b></p>
+          <p>
+            대량 DELETE는 락 보유 시간이 길어지고 <b>복제 지연</b>을 유발합니다.
+            <a href="./transaction.html#s8">락이 인덱스에 걸린다</a>는 사실과 직접 연결되는 디테일입니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 웹훅 ============ -->
+    <section class="scene" id="s8">
+      <header class="scene-head">
+        <span class="scene-num">실무</span>
+        <h2>PG 웹훅 처리 — 반드시 해야 하는 4가지</h2>
+        <p class="scene-lead">
+          웹훅 엔드포인트는 <b>인증 없이 외부에 열려 있습니다.</b> 누구나 "결제 성공" 요청을 위조할 수 있습니다.
+        </p>
+      </header>
+
+      <ul class="checklist">
+        <li><b>① 서명 검증</b> — PG가 제공하는 서명 헤더를 <b>원본 바이트로</b> HMAC 검증합니다. JSON을 파싱한 뒤 다시 직렬화해서 검증하면 키 순서나 공백 때문에 실패합니다. <b>raw body를 써야 합니다.</b></li>
+        <li><b>② 중복 처리</b> — 이벤트 ID에 유니크 제약을 걸고, 이미 있으면 200을 주고 끝냅니다</li>
+        <li><b>③ 순서 역전 대비</b> — 웹훅은 순서를 보장하지 않습니다. 06장면의 상태 머신으로 역행을 막습니다</li>
+        <li><b>④ 빨리 200을 반환한다</b> — 핸들러에서 무거운 작업을 하면 PG가 타임아웃으로 보고 재발송을 반복합니다. <b>검증하고 큐에 넣고 즉시 200</b>을 준 뒤 비동기로 처리합니다. 여기서 SQS가 쓰이고, <b>컨슈머는 다시 멱등해야 합니다.</b></li>
+      </ul>
+
+      <pre class="code"><span class="k">func</span> verifySignature(rawBody []<span class="k">byte</span>, signature, secret <span class="k">string</span>) <span class="k">bool</span> {
+   mac := hmac.New(sha256.New, []<span class="k">byte</span>(secret))
+   mac.Write(rawBody)
+   expected := hex.EncodeToString(mac.Sum(<span class="k">nil</span>))
+   <span class="c">// 타이밍 공격 방지를 위해 상수 시간 비교를 쓴다</span>
+   <span class="k">return</span> hmac.Equal([]<span class="k">byte</span>(expected), []<span class="k">byte</span>(signature))
+}</pre>
+
+      <div class="warn">
+        <p><b>금액 검증을 잊지 않습니다. 결제 구현에서 가장 흔한 실무 취약점입니다.</b></p>
+        <p style="margin-top:6px">
+          웹훅이나 결제 승인 응답의 금액이 <b>우리 DB에 저장된 주문 금액과 일치하는지 반드시 확인</b>합니다.
+          클라이언트가 금액을 조작해 보내는 <b>가격 위조 공격</b>을 막는 지점입니다.
+        </p>
+      </div>
+
+      <pre class="code"><span class="k">if</span> webhook.Amount != order.Amount {
+   <span class="c">// 즉시 결제 취소 + 알림</span>
+   <span class="k">return</span> errAmountMismatch
+}</pre>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>5xx일 때 멱등 키를 지우는 이유 — 설계 판단 포인트입니다.</b></p>
+          <p>
+            <b>5xx / 타임아웃</b>은 일시적 장애일 가능성이 큽니다. 재시도해야 성공하므로 <b>키를 해제</b>합니다.
+            <b>4xx</b>는 요청 자체가 잘못됐고 재시도해도 같은 결과이므로 <b>응답을 저장해 재생</b>합니다.
+          </p>
+          <p>
+            단, 5xx라도 <b>외부 PG 호출이 이미 나갔다면 키를 지우면 위험합니다.</b>
+            그래서 실제로는 PG 호출 여부까지 상태로 기록하고, 애매한 건 정합 배치에 맡깁니다.
+            <b>"애매하면 지우지 않고 미확정으로 남긴다"가 돈을 다루는 시스템의 원칙입니다.</b>
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 개념 정리 ============ -->
+    <section class="scene" id="s9">
+      <header class="scene-head">
+        <span class="scene-num">개념</span>
+        <h2>멱등성 vs 중복 제거 vs Exactly-Once</h2>
+      </header>
+
+      <table class="tbl">
+        <tbody>
+          <tr><td>At-least-once</td><td>최소 한 번은 전달. <b>중복 가능.</b> SQS Standard, 대부분의 웹훅</td></tr>
+          <tr><td>At-most-once</td><td>최대 한 번. <b>유실 가능</b></td></tr>
+          <tr class="locked"><td>Exactly-once</td><td>정확히 한 번. <b>분산 시스템에서 순수하게 달성 불가능에 가깝다</b></td></tr>
+          <tr class="hit"><td>멱등성</td><td>중복이 와도 결과가 같게 만든다 → <b>실질적으로 exactly-once 효과</b></td></tr>
+        </tbody>
+      </table>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>"정확히 한 번 전달"을 만들려 하지 말고, "여러 번 와도 괜찮게" 만듭니다.</b></p>
+          <p>
+            이게 분산 시스템의 정석적인 접근이고, 면접에서 이 문장을 말하면 사고 수준이 드러납니다.
+          </p>
+        </div>
+      </div>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">Outbox 패턴 — SQS 발행과 DB 커밋의 정합</h3>
+      <pre class="code" style="margin-top:0"><span class="bad">❌ tx 커밋 → SQS 발행</span>    <span class="c">: 커밋 후 발행 직전에 죽으면 메시지 유실</span>
+<span class="bad">❌ SQS 발행 → tx 커밋</span>    <span class="c">: 롤백되면 없는 일에 대한 메시지가 나간다</span>
+
+<span class="s">✅ Outbox</span>
+   tx: 주문 저장 + outbox 테이블에 메시지 저장 <span class="c">(같은 트랜잭션)</span>
+   별도 워커: outbox를 폴링해 SQS로 발행하고 발행 완료 표시
+   <span class="c">→ 발행이 at-least-once가 되므로 컨슈머는 멱등해야 한다</span></pre>
+      <p class="stack-note">
+        DB 변경과 메시지 발행을 <b>하나의 트랜잭션으로 묶는</b> 방법입니다.
+        이름만 알아도 "메시지 유실은 어떻게 막나요?"에 답할 수 있습니다.
+      </p>
+    </section>
+
+    <!-- ============ 정리 ============ -->
+    <section class="scene" id="s10">
+      <header class="scene-head">
+        <span class="scene-num">정리</span>
+        <h2>이 7장면을 한 문단으로</h2>
+      </header>
+
+      <div class="stage" style="min-height:auto">
+        <p style="margin:0;font-size:15px;line-height:1.95;color:var(--ink-2)">
+          멱등성은 같은 요청을 여러 번 실행해도 <b style="color:var(--ink)">결과 상태가 한 번 실행한 것과 같은</b> 성질입니다.
+          결제에서 중요한 이유는, 네트워크 타임아웃이 나면 클라이언트는
+          <b style="color:var(--rose)">성공인지 실패인지 알 수 없어</b> 재시도하게 되고 그때 이중 결제가 발생하기 때문입니다.
+          결제는 보통 POST라 프로토콜이 멱등성을 보장하지 않으므로
+          <b style="color:var(--cyan)">Idempotency-Key</b>로 직접 만듭니다.
+          동시성 판정은 애플리케이션이 아니라 <b style="color:var(--green)">DB 유니크 제약</b>이 합니다.
+          "조회해서 없으면 INSERT"는 check-then-act라 경쟁 상태에 뚫립니다.
+          외부 PG 호출은 트랜잭션 밖으로 빼고 <b style="color:var(--amber)">PENDING을 먼저 커밋</b>해 흔적을 남기고,
+          상태 전이는 상태 머신과 조건부 UPDATE로 원자화하고,
+          남은 미확정은 <b style="color:var(--violet)">정합 배치</b>로 맞춥니다.
+        </p>
+      </div>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">자주 하는 실수</h3>
+      <ul class="checklist">
+        <li>멱등성을 "중복 요청을 막는 것"으로만 설명한다 → <b>막는 게 아니라 여러 번 와도 결과가 같게 만드는 것</b>입니다. 차단이 아니라 흡수입니다</li>
+        <li>프론트에서 버튼을 비활성화하는 걸 해결책으로 제시한다 → UX 보완이지 방어가 아닙니다</li>
+        <li>애플리케이션 코드로 중복을 체크한다 → 경쟁 상태에 뚫립니다. <b>DB 유니크 제약이 방어선</b></li>
+        <li>Redis 락으로 해결한다고 답한다 → 락은 최적화, 최종 보장은 영속 저장소의 제약</li>
+        <li><code>IN_PROGRESS</code> 상태를 두지 않는다 → 동시 요청 처리가 정의되지 않습니다</li>
+        <li>실패 케이스만 생각하고 <b>"성공했는데 응답이 유실된 경우"</b>를 놓친다 → 이게 사실 이중 결제의 주된 원인입니다</li>
+        <li>정합 배치를 언급하지 않는다 → 돈을 다루는 시스템은 항상 대조 장치가 있습니다</li>
+      </ul>
+    </section>
+
+  </div>
+
+  <div class="wrap pager">
+    <a href="./proxy.html"><small>← 이전</small>03 프록시</a>
+    <a class="next" href="./deployment.html"><small>다음 →</small>05 배포</a>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap row-flex">
+    <span>원문 노트: <a href="../idempotency.md">idempotency.md</a></span>
+    <span>기준: MySQL 8.x · Redis · AWS SQS · Go/Echo · PG(토스페이먼츠/포트원)</span>
+  </div>
+</footer>
+
+<script src="./assets/scene.js"></script>
+<script>
+(function () {
+  function watch(name, fn) {
+    var sc = document.querySelector('[data-scene="' + name + '"]');
+    if (!sc) return;
+    fn(0);
+    new MutationObserver(function () {
+      fn(parseInt(sc.dataset.step || '0', 10));
+    }).observe(sc, { attributes: true, attributeFilter: ['data-step'] });
+  }
+
+  /* 03 Idempotency-Key 흐름: 행 하이라이트 */
+  watch('keyflow', function (step) {
+    for (var i = 1; i <= 6; i++) {
+      var el = document.getElementById('k' + i);
+      if (!el) continue;
+      var cls = 'krow';
+      if (i === step) cls += i >= 5 ? ' dup' : ' on';
+      else if (i < step) cls += ' past';
+      el.className = cls;
+    }
+  });
+
+  /* 05 커넥션 점유 바 */
+  watch('txb', function (step) {
+    var a = document.getElementById('hb1');
+    var b = document.getElementById('hb2');
+    if (a) a.style.width = step <= 1 ? '8%' : step === 2 ? '50%' : '100%';
+    if (b) b.style.width = step <= 1 ? '8%' : step === 2 ? '8%' : '18%';
+  });
+
+  /* 06 상태 머신 하이라이트 */
+  watch('fsm', function (step) {
+    var map = {
+      0: ['', '', '', ''],
+      1: ['done', 'cur', '', ''],
+      2: ['done', 'done', 'cur', ''],
+      3: ['done', 'done', 'cur', ''],
+      4: ['done', 'done', 'cur', ''],
+      5: ['done', 'done', 'cur', '']
+    };
+    var st = map[step] || map[0];
+    for (var i = 0; i < 4; i++) {
+      var el = document.getElementById('f' + (i + 1));
+      if (el) el.className = 'st ' + st[i];
+    }
+    if (step >= 4) {
+      var p = document.getElementById('f2');
+      if (p) p.className = 'st blocked';
+    }
+  });
+
+  /* 07 정합 배치 단계 */
+  watch('recon', function (step) {
+    for (var i = 1; i <= 4; i++) {
+      var el = document.getElementById('r' + i);
+      if (!el) continue;
+      el.className = 'fstep' + (i === step ? ' on' : i < step ? ' done' : '');
+    }
+  });
+})();
+</script>
+</body>
+</html>

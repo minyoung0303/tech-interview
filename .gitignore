@@ -1,0 +1,17 @@
+# dependencies
+node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# editor
+.vscode/
+.idea/
+*.swp
+
+# logs / temp
+*.log
+_tmp*
+._tmp*

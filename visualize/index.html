@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>백엔드 기술면접 시각화 — 트랜잭션·인덱스·프록시·멱등성·배포</title>
+<meta name="description" content="트랜잭션, 인덱스, 프록시, 결제 멱등성, 배포를 애니메이션으로 이해하는 기술면접 정리">
+<link rel="stylesheet" href="./assets/base.css">
+</head>
+<body>
+<a class="skip-link" href="#topics">본문으로 건너뛰기</a>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="home" href="./index.html">visualize<span>/</span>backend</a>
+    <nav aria-label="주제 바로가기">
+      <a href="./transaction.html">트랜잭션</a>
+      <a href="./db-index.html">인덱스</a>
+      <a href="./proxy.html">프록시</a>
+      <a href="./idempotency.html">멱등성</a>
+      <a href="./deployment.html">배포</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero wrap">
+    <p class="eyebrow">Backend Interview · Visualized</p>
+    <h1>글로 읽으면 안 외워지는 걸<br><em>움직여서</em> 이해한다</h1>
+    <p>
+      트랜잭션, 인덱스, 프록시, 결제 멱등성, 배포.
+      다섯 주제를 <b>개념 하나 = 한 줄 정의 + 애니메이션 + 💡 헷갈리는 포인트</b> 포맷으로 쪼갰습니다.
+      각 장면은 단계별로 재생되고, 좌우 방향키로도 넘길 수 있습니다.
+    </p>
+    <div class="hero-meta">
+      <span class="chip cyan">MySQL 8 / InnoDB</span>
+      <span class="chip violet">Go / Echo</span>
+      <span class="chip green">AWS · EKS</span>
+      <span class="chip amber">Redis · SQS</span>
+      <span class="chip">37개 장면</span>
+    </div>
+  </section>
+
+  <section class="wrap" id="topics" aria-label="주제 목록">
+    <div class="grid">
+
+      <a class="card" href="./transaction.html">
+        <span class="n">01</span>
+        <h2>트랜잭션<small>TRANSACTION</small></h2>
+        <p>전부 되거나 전부 안 되게. ACID를 InnoDB가 실제로 어떻게 구현하는지, MVCC와 락이 어디서 갈리는지 움직여서 봅니다.</p>
+        <div class="chips">
+          <span class="chip cyan">ACID</span>
+          <span class="chip cyan">격리 수준</span>
+          <span class="chip cyan">MVCC</span>
+          <span class="chip rose">데드락</span>
+          <span class="chip">8장면</span>
+        </div>
+      </a>
+
+      <a class="card" href="./db-index.html">
+        <span class="n">02</span>
+        <h2>인덱스<small>INDEX</small></h2>
+        <p>B+Tree를 타고 내려가는 과정, 세컨더리 인덱스의 2단계 조회, 커버링 인덱스로 그 2단계가 사라지는 순간.</p>
+        <div class="chips">
+          <span class="chip violet">B+Tree</span>
+          <span class="chip violet">클러스터드</span>
+          <span class="chip violet">커버링</span>
+          <span class="chip amber">EXPLAIN</span>
+          <span class="chip">8장면</span>
+        </div>
+      </a>
+
+      <a class="card" href="./proxy.html">
+        <span class="n">03</span>
+        <h2>프록시<small>FORWARD / REVERSE PROXY</small></h2>
+        <p>누구를 대신하고 누구를 숨기는가. XFF 위조, 타임아웃 두 겹, 헬스체크 401 사고까지 실무 함정 중심으로.</p>
+        <div class="chips">
+          <span class="chip green">Forward</span>
+          <span class="chip green">Reverse</span>
+          <span class="chip green">L4 / L7</span>
+          <span class="chip rose">XFF 위조</span>
+          <span class="chip">7장면</span>
+        </div>
+      </a>
+
+      <a class="card" href="./idempotency.html">
+        <span class="n">04</span>
+        <h2>결제 멱등성<small>IDEMPOTENCY</small></h2>
+        <p>돈이 두 번 빠지는 경로와, 그걸 흡수하는 설계. Idempotency-Key부터 정합 배치까지 한 흐름으로.</p>
+        <div class="chips">
+          <span class="chip amber">Idempotency-Key</span>
+          <span class="chip amber">유니크 제약</span>
+          <span class="chip rose">경쟁 상태</span>
+          <span class="chip">7장면</span>
+        </div>
+      </a>
+
+      <a class="card" href="./deployment.html">
+        <span class="n">05</span>
+        <h2>배포<small>DEPLOYMENT / CI·CD</small></h2>
+        <p>롤링 업데이트가 왜 그 자체로는 무중단이 아닌지, 502는 어디서 나는지, 스키마 변경은 왜 위험한지.</p>
+        <div class="chips">
+          <span class="chip blue">Rolling</span>
+          <span class="chip blue">Probe 3종</span>
+          <span class="chip rose">preStop 502</span>
+          <span class="chip green">확장-수축</span>
+          <span class="chip">7장면</span>
+        </div>
+      </a>
+
+      <div class="card" style="cursor:default">
+        <span class="n">HOW TO</span>
+        <h2>보는 방법<small>USAGE</small></h2>
+        <p style="margin-bottom:12px">
+          각 장면은 화면에 들어오면 자동 재생됩니다.
+        </p>
+        <dl class="kv">
+          <dt>▶ 재생</dt><dd>처음부터 단계 자동 진행</dd>
+          <dt>◀ ▶</dt><dd>한 단계씩 직접 넘기기</dd>
+          <dt>← →</dt><dd>방향키로도 단계 이동</dd>
+          <dt>💡</dt><dd>면접에서 갈리는 지점</dd>
+        </dl>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="wrap" style="padding:34px 0 10px">
+    <div class="insight">
+      <span class="ico">💡</span>
+      <div>
+        <p><b>이 다섯 주제는 서로 이어져 있습니다.</b></p>
+        <p>
+          인덱스가 없으면 락 범위가 넓어져 <b>데드락</b>이 나고 → 락을 오래 잡으면 <b>커넥션 풀</b>이 마르고 →
+          그래서 결제는 트랜잭션 밖에서 <b>멱등하게</b> 처리해야 하고 → 그 앞단에는 재시도를 하는 <b>프록시</b>가 있고 →
+          <b>배포</b> 중에는 구·신 버전이 같은 DB를 동시에 봅니다.
+          한 주제만 파는 것보다 이 연결을 말하는 쪽이 훨씬 강합니다.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap" style="padding:26px 0 40px">
+    <h2 style="font-size:17px;letter-spacing:-.02em;margin:0 0 14px">원문 노트</h2>
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(180px,1fr))">
+      <a class="card" style="padding:16px 18px" href="../transaction.md"><h2 style="font-size:15px;margin:0">transaction.md</h2></a>
+      <a class="card" style="padding:16px 18px" href="../index.md"><h2 style="font-size:15px;margin:0">index.md</h2></a>
+      <a class="card" style="padding:16px 18px" href="../proxy.md"><h2 style="font-size:15px;margin:0">proxy.md</h2></a>
+      <a class="card" style="padding:16px 18px" href="../idempotency.md"><h2 style="font-size:15px;margin:0">idempotency.md</h2></a>
+      <a class="card" style="padding:16px 18px" href="../deployment.md"><h2 style="font-size:15px;margin:0">deployment.md</h2></a>
+      <a class="card" style="padding:16px 18px" href="../question.md"><h2 style="font-size:15px;margin:0">question.md</h2></a>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="wrap row-flex">
+    <span>기준: MySQL 8.x / InnoDB · Go 1.23 / Echo · AWS(EKS, ALB, SQS) · Redis</span>
+  </div>
+</footer>
+
+<script src="./assets/scene.js"></script>
+</body>
+</html>

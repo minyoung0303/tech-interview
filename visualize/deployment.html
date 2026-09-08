@@ -1,0 +1,1002 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>배포 시각화 — 롤링 업데이트 · Probe · preStop 502 · 확장-수축</title>
+<meta name="description" content="배포와 CI/CD를 애니메이션으로 이해하기. 파이프라인 5단계, 멀티스테이지 빌드, latest 태그 문제, 롤링 업데이트, readiness/liveness, preStop 502, DB 마이그레이션 확장-수축 패턴.">
+<link rel="stylesheet" href="./assets/base.css">
+<style>
+/* 02 이미지 크기 */
+.sizebox { display: flex; gap: 20px; align-items: flex-end; justify-content: center; min-height: 130px; }
+.sizecol { text-align: center; }
+.sizecol .blk {
+  width: 76px;
+  border-radius: 8px 8px 4px 4px;
+  transition: height 1s var(--ease), background-color .5s;
+  margin: 0 auto 8px;
+}
+.sizecol .blk.big { background: linear-gradient(180deg, rgba(251,113,133,.45), rgba(251,113,133,.15)); border: 1px solid rgba(251,113,133,.5); }
+.sizecol .blk.small { background: linear-gradient(180deg, rgba(69,217,154,.45), rgba(69,217,154,.15)); border: 1px solid rgba(69,217,154,.5); }
+.sizecol .nm { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.sizecol .vl { font-family: var(--mono); font-size: 15px; font-weight: 700; }
+
+/* 04 용량 그래프 */
+.cap-line { display: grid; grid-template-columns: 150px 1fr 52px; gap: 12px; align-items: center; margin-top: 12px; }
+.cap-line .nm { font-family: var(--mono); font-size: 11px; color: var(--ink-3); }
+.cap-line .vl { font-family: var(--mono); font-size: 12px; text-align: right; }
+
+/* 06 preStop 타임라인 */
+.tl { position: relative; padding: 8px 0 26px; }
+.tl .axis { height: 2px; background: var(--line); border-radius: 2px; }
+.tl .mk {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-3);
+  width: 96px;
+  transition: all .45s var(--ease);
+}
+.tl .mk i { display: block; width: 9px; height: 9px; border-radius: 50%; background: var(--line); margin: 22px auto 5px; transition: background-color .4s; }
+.tl .mk.on { color: var(--ink); }
+.tl .mk.on i { background: var(--cyan); box-shadow: 0 0 10px 2px rgba(94,231,245,.5); }
+.tl .mk.bad { color: var(--rose); }
+.tl .mk.bad i { background: var(--rose); box-shadow: 0 0 10px 2px rgba(251,113,133,.5); }
+
+/* 07 마이그레이션 */
+.mg { display: grid; gap: 7px; }
+.mg .stepline {
+  display: grid;
+  grid-template-columns: 84px 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 13px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: rgba(255,255,255,.02);
+  font-size: 13.5px;
+  transition: all .45s var(--ease);
+}
+.mg .stepline .tagn { font-family: var(--mono); font-size: 10.5px; color: var(--ink-3); letter-spacing: .04em; }
+.mg .stepline.on { border-color: rgba(94,231,245,.5); background: rgba(94,231,245,.07); }
+.mg .stepline.on .tagn { color: var(--cyan); }
+.mg .stepline.done { opacity: .5; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#s1">본문으로 건너뛰기</a>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="home" href="./index.html">visualize<span>/</span>backend</a>
+    <nav aria-label="주제 바로가기">
+      <a href="./transaction.html">트랜잭션</a>
+      <a href="./db-index.html">인덱스</a>
+      <a href="./proxy.html">프록시</a>
+      <a href="./idempotency.html">멱등성</a>
+      <a href="./deployment.html" aria-current="page">배포</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero wrap">
+    <p class="eyebrow">05 · Deployment / CI·CD</p>
+    <h1><em>배포</em><br>롤링 업데이트만으로는 무중단이 아니다</h1>
+    <p>
+      이 질문의 성격을 정확히 알아야 합니다. 새로운 요구가 아니라 <b>이력서 검증 질문</b>입니다.
+      그래서 정답은 교과서적 파이프라인이 아니라 <b>내가 실제로 한 것을 순서대로 말하는 것</b>입니다.
+      골격은 다섯 단어로 외웁니다 — <b>소스 → 빌드 → 이미지 → 배포 → 검증.</b>
+    </p>
+    <div class="hero-meta">
+      <span class="chip blue">Docker</span>
+      <span class="chip blue">Kubernetes / EKS</span>
+      <span class="chip green">GitHub Actions</span>
+      <span class="chip amber">ECR</span>
+      <span class="chip">7장면</span>
+    </div>
+  </section>
+
+  <nav class="scene-nav" aria-label="장면 목차">
+    <div class="wrap">
+      <a href="#s1">01 파이프라인</a>
+      <a href="#s2">02 멀티 스테이지</a>
+      <a href="#s3">03 latest 태그</a>
+      <a href="#s4">04 롤링 업데이트</a>
+      <a href="#s5">05 Probe 3종</a>
+      <a href="#s6">06 preStop 502</a>
+      <a href="#s7">07 마이그레이션</a>
+      <a href="#s8">전략 비교</a>
+      <a href="#s9">검증</a>
+      <a href="#s10">정리</a>
+    </div>
+  </nav>
+
+  <div class="wrap scenes">
+
+    <!-- ============ 01 파이프라인 ============ -->
+    <section class="scene" id="s1" data-scene="pipeline" data-steps="5" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">01</span>
+        <h2>파이프라인 5단계 — 각 단계에서 <em>무엇을 검증하는지</em>가 핵심이다</h2>
+        <p class="scene-lead">
+          "<code>git push</code>하면 배포된다" 수준으로 말하면 아무것도 전달되지 않습니다.
+          단계마다 무엇을 확인하고, 실패하면 어디서 멈추는지를 말해야 합니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="flowv">
+          <div class="fstep" id="p1">
+            <span class="no">1</span>
+            <span><b>소스</b> — push → PR → 리뷰 → main 머지 → Webhook으로 CI 트리거</span>
+          </div>
+          <div class="fstep" id="p2">
+            <span class="no">2</span>
+            <span><b>빌드 &amp; 검증</b> — 의존성 캐시 복원 → 린트(golangci-lint) → 테스트(<code>go test -race ./...</code>) → 바이너리 빌드<br>
+              <span style="color:var(--amber);font-size:12.5px">※ 여기서 실패하면 즉시 중단. 배포 단계로 넘기지 않는다</span></span>
+          </div>
+          <div class="fstep" id="p3">
+            <span class="no">3</span>
+            <span><b>이미지</b> — 멀티 스테이지 빌드 → <b>커밋 SHA + 시맨틱 버전</b>으로 태그 → 취약점 스캔(Trivy) → ECR push</span>
+          </div>
+          <div class="fstep" id="p4">
+            <span class="no">4</span>
+            <span><b>배포</b> — staging 배포 → 스모크 테스트 → production 배포(롤링/블루그린/카나리) → <b>헬스 체크 통과 후 트래픽 유입</b></span>
+          </div>
+          <div class="fstep" id="p5">
+            <span class="no">5</span>
+            <span><b>검증</b> — 헬스 체크 → Sentry 에러율 / Grafana 지표 / CloudWatch 로그 → 이상 시 <b>롤백</b></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>트리거는 main 머지입니다. 여기서부터 사람 손이 떨어집니다.</p>
+        <p data-cap="2"><span class="k">02</span>린트와 테스트가 <b>게이트</b> 역할을 합니다. 실패하면 여기서 끝입니다.</p>
+        <p data-cap="3"><span class="k">03</span>이미지를 만들고 태그를 붙입니다. 태그 전략이 다음 두 장면의 주제입니다.</p>
+        <p data-cap="4"><span class="k">04</span>staging을 먼저 거칩니다. production은 헬스 체크를 통과한 뒤에 트래픽을 받습니다.</p>
+        <p data-cap="5"><span class="k">05</span><b>배포 완료가 끝이 아니라 "이상 없음 확인"이 끝입니다.</b></p>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>절대 원칙: 아는 것만 말하고, 모르는 건 모른다고 합니다.</b></p>
+          <p>
+            배포 질문은 꼬리질문 밀도가 가장 높습니다. "ArgoCD로 GitOps 했습니다"라고 하면
+            바로 sync wave와 drift 감지를 물어봅니다. 이렇게 선을 그으면 면접관은 그 선 안에서 질문하고,
+            <b>통제 가능한 상황</b>이 됩니다.
+          </p>
+          <p style="font-family:var(--mono);font-size:12.5px;color:var(--ink-2);margin-top:8px">
+            "제가 직접 구성한 건 GitHub Actions 기반 파이프라인이고,<br>
+            &nbsp;쿠버네티스 환경은 사용해본 경험은 없어서 개념 수준으로만 알고 있습니다."
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 02 멀티 스테이지 ============ -->
+    <section class="scene" id="s2" data-scene="multistage" data-steps="4" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">02</span>
+        <h2>멀티 스테이지 빌드 — <em>800MB → 20MB</em></h2>
+        <p class="scene-lead">
+          이미지가 작으면 push/pull이 빠르고, 그게 곧 배포 속도입니다. 그리고 <b>보안 이득이 더 큽니다.</b>
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="sizebox">
+          <div class="sizecol">
+            <div class="blk big" id="blk1" style="height:0"></div>
+            <div class="vl" style="color:var(--rose)">
+              <span class="morph" style="min-width:7ch">
+                <span data-until="1">—</span>
+                <span data-from="2">840 MB</span>
+              </span>
+            </div>
+            <div class="nm">golang:1.23-alpine<br>(빌드 스테이지)</div>
+          </div>
+          <div class="sizecol">
+            <div class="blk small" id="blk2" style="height:0"></div>
+            <div class="vl" style="color:var(--green)">
+              <span class="morph" style="min-width:7ch">
+                <span data-until="2">—</span>
+                <span data-from="3">18 MB</span>
+              </span>
+            </div>
+            <div class="nm">alpine:3.20<br>(최종 이미지)</div>
+          </div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:14px;gap:8px">
+          <span class="lbl" data-at="1">빌드 스테이지: 컴파일러 + 소스 + 빌드 도구</span>
+          <span class="lbl rose" data-at="2">이걸 그대로 배포하면 840MB</span>
+          <span class="lbl green" data-at="3">런타임 스테이지에는 바이너리만 복사 → 18MB</span>
+          <span class="lbl cyan" data-at="4">최종 이미지에 소스와 컴파일러가 남지 않는다 = 공격 표면 축소</span>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>빌드에는 Go 컴파일러, 모듈 캐시, 소스 코드가 다 필요합니다.</p>
+        <p data-cap="2"><span class="k">02</span>그 이미지를 그대로 배포하면 800MB가 넘습니다. 노드마다 이걸 내려받습니다.</p>
+        <p data-cap="3"><span class="k">03</span>런타임 스테이지에는 <b>컴파일된 바이너리만</b> 복사합니다.</p>
+        <p data-cap="4"><span class="k">04</span>크기보다 중요한 건 <b>소스 코드와 빌드 도구가 남지 않는다</b>는 점입니다.</p>
+      </div>
+
+      <pre class="code"><span class="c"># ---------- build stage ----------</span>
+<span class="k">FROM</span> golang:1.23-alpine <span class="k">AS</span> builder
+<span class="k">WORKDIR</span> /app
+
+<span class="c"># 의존성 파일만 먼저 복사한다.</span>
+<span class="c"># 소스가 바뀌어도 go.mod/go.sum이 그대로면 이 레이어 캐시가 재사용된다.</span>
+<span class="k">COPY</span> go.mod go.sum ./
+<span class="k">RUN</span> go mod download
+
+<span class="k">COPY</span> . .
+
+<span class="c"># CGO_ENABLED=0 → 정적 링크. -ldflags "-s -w" → 디버그 심볼 제거로 크기 축소</span>
+<span class="k">RUN</span> CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags=<span class="s">"-s -w -X main.version=${VERSION}"</span> \
+    -o /app/server ./cmd/server
+
+<span class="c"># ---------- runtime stage ----------</span>
+<span class="k">FROM</span> alpine:3.20
+
+<span class="c"># HTTPS 호출을 위한 CA 인증서, 로그 타임스탬프를 위한 타임존</span>
+<span class="k">RUN</span> apk add --no-cache ca-certificates tzdata &amp;&amp; \
+    adduser -D -u 10001 appuser
+
+<span class="k">WORKDIR</span> /app
+<span class="k">COPY</span> --from=builder /app/server .
+
+<span class="k">USER</span> appuser        <span class="c"># root로 실행하지 않는다 (컨테이너 보안 기본)</span>
+<span class="k">EXPOSE</span> 8080
+<span class="k">ENTRYPOINT</span> [<span class="s">"/app/server"</span>]   <span class="c"># ★ exec 형식. shell 형식이면 SIGTERM을 못 받는다</span></pre>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>레이어 캐시 순서 하나로 CI 시간이 몇 분씩 차이납니다.</b></p>
+          <p>
+            Docker는 레이어 단위로 캐시합니다. <b>자주 바뀌는 것을 뒤에</b> 둬야 합니다.
+            <code>COPY . .</code>를 맨 앞에 두면 소스 한 글자만 바뀌어도 <code>go mod download</code>부터 다시 합니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 03 latest ============ -->
+    <section class="scene" id="s3" data-scene="latest" data-steps="4" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">03</span>
+        <h2><code>latest</code> 태그를 쓰면 <em>롤백할 대상이 사라진다</em></h2>
+        <p class="scene-lead">
+          작지만 면접에서 확실히 먹히는 포인트입니다.
+          핵심 이유는 하나 — <b>커밋 SHA를 태그로 쓰면 이미지 ↔ 소스 코드가 1:1로 대응됩니다.</b>
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="split">
+          <div class="pane bad">
+            <h4>myapp:latest</h4>
+            <div class="col-flex" style="gap:7px">
+              <div class="node" style="min-width:auto;text-align:left" data-from="1">
+                latest → <span style="font-family:var(--mono);color:var(--ink-2)">커밋 a3f9c21</span>
+              </div>
+              <div class="node rose" style="min-width:auto;text-align:left" data-from="2">
+                latest → <span style="font-family:var(--mono)">커밋 7b2e004</span>
+                <small>이전 latest는 덮어써져 사라졌다</small>
+              </div>
+              <div class="node" style="min-width:auto;text-align:left;opacity:.4" data-from="3">
+                롤백? → <span style="color:var(--rose)">되돌릴 태그가 없다</span>
+              </div>
+            </div>
+            <ul style="margin:12px 0 0;padding-left:19px;font-size:13px;color:var(--ink-2);line-height:1.8">
+              <li>어떤 버전이 돌고 있는지 알 수 없다 → 장애 시 원인 커밋 특정 불가</li>
+              <li><b style="color:var(--rose)">imagePullPolicy와 엉킨다</b> — 태그가 같으면 노드가 캐시된 이미지를 그대로 쓸 수 있어 <b>배포했는데 코드가 안 바뀌는 현상</b>이 생긴다</li>
+              <li>같은 태그가 다른 내용을 가리키므로 재현이 불가능하다</li>
+            </ul>
+          </div>
+
+          <div class="pane good">
+            <h4>myapp:a3f9c21 (커밋 SHA)</h4>
+            <div class="col-flex" style="gap:7px">
+              <div class="node green" style="min-width:auto;text-align:left" data-from="1">
+                a3f9c21 → <span style="font-family:var(--mono)">커밋 a3f9c21</span>
+              </div>
+              <div class="node green" style="min-width:auto;text-align:left" data-from="2">
+                7b2e004 → <span style="font-family:var(--mono)">커밋 7b2e004</span>
+                <small>둘 다 레지스트리에 남아 있다</small>
+              </div>
+              <div class="node cyan" style="min-width:auto;text-align:left" data-from="3">
+                롤백 → <span style="font-family:var(--mono)">a3f9c21로 다시 배포</span>
+              </div>
+            </div>
+            <pre class="code" style="margin-top:12px">docker build \
+  -t myapp:$(git rev-parse --short HEAD) \
+  -t myapp:v1.4.2 .</pre>
+          </div>
+        </div>
+
+        <div style="margin-top:16px" data-from="4">
+          <pre class="code" style="margin-top:0">kubectl rollout status deployment/myapp        <span class="c"># 진행 상황</span>
+kubectl rollout history deployment/myapp       <span class="c"># 리비전 목록</span>
+kubectl rollout undo deployment/myapp          <span class="c"># 직전 리비전으로</span>
+kubectl rollout undo deployment/myapp --to-revision=3</pre>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>첫 배포. 양쪽 다 같은 이미지를 가리킵니다.</p>
+        <p data-cap="2"><span class="k">02</span>두 번째 배포. 왼쪽은 <code>latest</code>가 <b>덮어써지며 이전 것이 사라집니다.</b></p>
+        <p data-cap="3"><span class="k">03</span>장애가 나서 롤백해야 합니다. 왼쪽은 되돌릴 대상이 없습니다.</p>
+        <p data-cap="4"><span class="k">04</span>이미지 태그가 커밋 SHA면 <b>해당 SHA로 다시 배포하는 것도 확실한 롤백</b>입니다.</p>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>배포를 아는 사람은 항상 롤백을 먼저 생각합니다.</b></p>
+          <p>롤백 이야기를 안 하면 "배포해본 적은 있지만 운영해본 적은 없는 사람"으로 읽힙니다.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 04 롤링 업데이트 ============ -->
+    <section class="scene" id="s4" data-scene="rolling" data-steps="6" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">04</span>
+        <h2>롤링 업데이트 — <code>maxUnavailable: 0</code>이 무중단의 핵심</h2>
+        <p class="scene-lead">
+          새 파드가 <b>Ready가 된 뒤에야</b> 구 파드를 내립니다. 그래서 처리 용량이 절대 줄지 않습니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="pods" id="podrow"></div>
+
+        <div class="cap-line">
+          <span class="nm">사용 가능한 용량</span>
+          <div class="bar green"><span id="capbar" style="width:100%"></span></div>
+          <span class="vl" id="capval" style="color:var(--green)">4 / 4</span>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px;gap:8px">
+          <span class="lbl green" data-at="1">v1 파드 4개 · 전부 Ready</span>
+          <span class="lbl amber" data-at="2">v2 파드 1개 생성 (maxSurge: 1 → 최대 5개까지 허용)</span>
+          <span class="lbl cyan" data-at="3">v2가 Ready → 그 다음에 v1 하나를 내린다</span>
+          <span class="lbl violet" data-at="4">교체 중 — 구 버전과 신 버전이 동시에 존재한다</span>
+          <span class="lbl green" data-at="5">v2 4개 완료. 용량은 한 번도 4 미만으로 내려가지 않았다</span>
+          <span class="lbl rose" data-at="6">maxSurge: 0, maxUnavailable: 1 이면? 용량이 3으로 떨어진다</span>
+        </div>
+
+        <pre class="code" data-from="5"><span class="k">spec</span>:
+  replicas: <span class="n">4</span>
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: <span class="n">1</span>         <span class="c"># 목표보다 최대 1개 더 띄울 수 있다 (최대 5개)</span>
+      <span class="hl">maxUnavailable: <span class="n">0</span>   <span class="c"># 사용 불가 파드를 0개로 → 용량이 절대 줄지 않는다</span></span></pre>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>v1 파드 4개가 트래픽을 받고 있습니다.</p>
+        <p data-cap="2"><span class="k">02</span>v2 파드 하나를 <b>추가로</b> 띄웁니다. 아직 v1은 4개 그대로입니다.</p>
+        <p data-cap="3"><span class="k">03</span>v2가 Ready가 되고 나서야 v1 하나를 종료합니다. <b>순서가 중요합니다.</b></p>
+        <p data-cap="4"><span class="k">04</span>이 구간에서 <b>두 버전이 같은 DB를 동시에 바라봅니다.</b> 07장면의 전제입니다.</p>
+        <p data-cap="5"><span class="k">05</span>교체 완료. 용량 그래프가 한 번도 아래로 내려가지 않았습니다.</p>
+        <p data-cap="6"><span class="k">06</span>반대 설정이면 리소스는 안 늘지만 <b>처리 용량이 일시적으로 줍니다.</b></p>
+      </div>
+
+      <div class="warn">
+        <p><b>하지만 이 설정만으로는 무중단이 아닙니다.</b></p>
+        <p style="margin-top:6px">
+          <b>헬스 체크(readinessProbe) + graceful shutdown</b>이 없으면 롤링 업데이트도 무중단이 아닙니다.
+          Ready 판정이 부정확하면 준비 안 된 파드로 트래픽이 가고,
+          종료 처리가 부정확하면 진행 중인 요청이 502로 끊깁니다. 다음 두 장면이 그 이야기입니다.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ 05 Probe ============ -->
+    <section class="scene" id="s5" data-scene="probe" data-steps="5" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">05</span>
+        <h2>Probe 3종 — <code>liveness</code>에 DB 체크를 넣으면 <em>연쇄 장애</em>가 난다</h2>
+        <p class="scene-lead">
+          이 구분을 설명하면 확실히 깊이가 인정됩니다.
+          <b>readiness는 트래픽만 차단, liveness는 컨테이너를 재시작</b>합니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <table class="tbl">
+          <thead><tr><th>Probe</th><th>질문</th><th>실패 시 동작</th><th>확인할 것</th></tr></thead>
+          <tbody>
+            <tr id="pb1"><td>startupProbe</td><td>초기화가 끝났나?</td><td>계속 대기 (임계 초과 시 재시작)</td><td>부팅이 느린 앱의 유예 시간</td></tr>
+            <tr id="pb2"><td>readinessProbe</td><td>트래픽 받을 준비가 됐나?</td><td><b>트래픽만 차단</b> (재시작 안 함)</td><td>DB 커넥션, 캐시 워밍 등 <b>의존성</b></td></tr>
+            <tr id="pb3"><td>livenessProbe</td><td>죽었나?</td><td><b>컨테이너 재시작</b></td><td>프로세스 자체가 응답하는지. <b>가볍게</b></td></tr>
+          </tbody>
+        </table>
+
+        <div style="margin-top:20px">
+          <p style="margin:0 0 10px"><span class="lbl rose" data-from="3">시나리오: DB가 3초간 흔들린다</span></p>
+          <div class="split">
+            <div class="pane bad">
+              <h4>❌ liveness에 DB 체크를 넣었다</h4>
+              <div class="pods" style="gap:7px">
+                <div class="pod" id="lp1" style="width:64px">파드 1</div>
+                <div class="pod" id="lp2" style="width:64px">파드 2</div>
+                <div class="pod" id="lp3" style="width:64px">파드 3</div>
+                <div class="pod" id="lp4" style="width:64px">파드 4</div>
+              </div>
+              <p style="margin:12px 0 0;font-size:13px;color:var(--ink-2)">
+                모든 파드의 liveness가 <b style="color:var(--rose)">동시에</b> 실패합니다.
+                전부 재시작되면서 부팅 중에는 아무도 요청을 못 받습니다.
+                DB가 회복돼도 서비스는 계속 죽어 있습니다. <b>연쇄 장애</b>입니다.
+              </p>
+            </div>
+            <div class="pane good">
+              <h4>✅ DB 체크는 readiness에</h4>
+              <div class="pods" style="gap:7px">
+                <div class="pod" id="rp1" style="width:64px">파드 1</div>
+                <div class="pod" id="rp2" style="width:64px">파드 2</div>
+                <div class="pod" id="rp3" style="width:64px">파드 3</div>
+                <div class="pod" id="rp4" style="width:64px">파드 4</div>
+              </div>
+              <p style="margin:12px 0 0;font-size:13px;color:var(--ink-2)">
+                트래픽만 빠지고 <b style="color:var(--green)">프로세스는 살아 있습니다.</b>
+                DB가 회복되면 readiness가 다시 통과하고 즉시 트래픽을 받습니다.
+                <b>재시작 비용이 0</b>입니다.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span><b>startupProbe</b> — 부팅이 느린 앱의 유예 시간. 이게 성공할 때까지 다른 probe는 시작되지 않습니다.</p>
+        <p data-cap="2"><span class="k">02</span><b>readinessProbe</b> — 실패하면 Service 엔드포인트에서 제거됩니다. 재시작은 안 합니다.</p>
+        <p data-cap="3"><span class="k">03</span><b>livenessProbe</b> — 실패하면 컨테이너를 재시작합니다. 그래서 여기에 넣는 게 위험합니다.</p>
+        <p data-cap="4"><span class="k">04</span>DB가 흔들리자 왼쪽은 <b>전 파드가 동시에 재시작</b>됩니다.</p>
+        <p data-cap="5"><span class="k">05</span>오른쪽은 트래픽만 빠집니다. DB 회복 후 즉시 복귀합니다.</p>
+      </div>
+
+      <pre class="code">containers:
+  - name: app
+    image: <span class="n">123456789</span>.dkr.ecr.ap-northeast-<span class="n">2</span>.amazonaws.com/myapp:a3f9c21
+
+    <span class="c"># 부팅이 느린 앱을 위한 유예 시간</span>
+    startupProbe:
+      httpGet: { path: /healthz, port: <span class="n">8080</span> }
+      failureThreshold: <span class="n">30</span>
+      periodSeconds: <span class="n">2</span>        <span class="c"># 최대 60초까지 기다려준다</span>
+
+    <span class="c"># "트래픽 받을 준비가 됐나" → 실패하면 Service 엔드포인트에서 제거 (재시작 안 함)</span>
+    readinessProbe:
+      httpGet: { path: /readyz, port: <span class="n">8080</span> }   <span class="c"># DB ping, Redis ping</span>
+      periodSeconds: <span class="n">5</span>
+      failureThreshold: <span class="n">3</span>
+
+    <span class="c"># "죽었나" → 실패하면 컨테이너를 재시작한다. 가볍게 유지한다</span>
+    livenessProbe:
+      httpGet: { path: /healthz, port: <span class="n">8080</span> }   <span class="c"># return 200 수준</span>
+      periodSeconds: <span class="n">10</span>
+      failureThreshold: <span class="n">3</span>
+
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }   <span class="c"># 스케줄링 기준. 이만큼은 보장받는다</span>
+      limits:   { cpu: 500m, memory: 512Mi }   <span class="c"># 초과 시 CPU는 스로틀, 메모리는 OOMKilled</span></pre>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>Go 앱이면 <code>GOMEMLIMIT</code>을 memory limit의 80~90%로 맞춰줍니다.</b></p>
+          <p>
+            GC가 미리 동작해서 OOM을 피할 수 있습니다.
+            메모리 limit을 넘으면 컨테이너가 <b>OOMKilled</b>되고, 이게 <code>CrashLoopBackOff</code>의 흔한 원인입니다.
+            디버깅은 <code>kubectl describe pod</code> → <code>kubectl logs --previous</code> → 종료 코드 확인 순서입니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 06 preStop 502 ============ -->
+    <section class="scene" id="s6" data-scene="prestop" data-steps="5" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">06</span>
+        <h2>무중단 배포인데 502가 난다면 — 원인은 <em>엔드포인트 전파 지연</em>이다</h2>
+        <p class="scene-lead">
+          파드 종료 시 <b>엔드포인트 제거와 SIGTERM이 동시에</b> 일어납니다.
+          이 문제를 알고 있으면 실무 경험자로 읽힙니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="tl">
+          <div class="axis"></div>
+          <div class="mk" id="m1" style="left:8%">파드 Terminating<i></i></div>
+          <div class="mk" id="m2" style="left:32%">엔드포인트 제거 요청<br>+ SIGTERM 전송<i></i></div>
+          <div class="mk" id="m3" style="left:58%">kube-proxy · ALB로<br>전파 (수 초)<i></i></div>
+          <div class="mk" id="m4" style="left:84%">전파 완료<i></i></div>
+        </div>
+
+        <div class="split" style="margin-top:8px">
+          <div class="pane bad">
+            <h4>❌ preStop 없음</h4>
+            <p style="margin:0;font-size:13.5px;color:var(--ink-2)">
+              앱이 SIGTERM을 받고 <b>즉시 종료</b>합니다.
+              그런데 ALB는 아직 이 파드로 라우팅하고 있습니다.
+            </p>
+            <p style="margin:10px 0 0;font-size:15px;color:var(--rose);font-weight:700" data-from="3">
+              → 그 사이 도착한 요청이 502로 실패
+            </p>
+          </div>
+          <div class="pane good">
+            <h4>✅ preStop으로 인위적 지연</h4>
+            <pre class="code" style="margin-top:0">lifecycle:
+  preStop:
+    exec:
+      command: [<span class="s">"sleep"</span>, <span class="s">"10"</span>]
+<span class="c"># 엔드포인트 전파를 기다린다.</span>
+<span class="c"># 그 사이엔 요청을 정상 처리한다</span>
+terminationGracePeriodSeconds: <span class="n">45</span>
+<span class="c"># preStop(10) + 앱 종료 시간보다 넉넉하게</span></pre>
+            <p style="margin:10px 0 0;font-size:13.5px;color:var(--green)" data-from="4">
+              → 전파가 끝난 뒤 종료를 시작하므로 502가 사라진다
+            </p>
+          </div>
+        </div>
+
+        <div style="margin-top:14px" data-from="5">
+          <p class="stack-note" style="margin:0">
+            종료 순서 전체: ① Terminating 전환 → ② <b>동시에</b> 엔드포인트 제거 + SIGTERM →
+            ③ <code>terminationGracePeriodSeconds</code>(기본 30초) 대기 → ④ 아직 살아있으면 SIGKILL
+          </p>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>파드가 Terminating 상태로 전환됩니다.</p>
+        <p data-cap="2"><span class="k">02</span>엔드포인트 제거 요청과 SIGTERM이 <b>동시에</b> 나갑니다. 이게 문제의 원인입니다.</p>
+        <p data-cap="3"><span class="k">03</span>엔드포인트 제거가 kube-proxy와 ALB까지 전파되는 데 <b>수 초</b>가 걸립니다. 그 사이 요청이 옵니다.</p>
+        <p data-cap="4"><span class="k">04</span><code>preStop</code>으로 종료를 늦추면 그 시간 동안 요청을 정상 처리합니다.</p>
+        <p data-cap="5"><span class="k">05</span>그리고 앱 쪽에서도 진행 중인 요청을 마무리하는 <b>graceful shutdown</b>이 필요합니다.</p>
+      </div>
+
+      <pre class="code"><span class="k">func</span> main() {
+   e := echo.New()
+   <span class="c">// ... 라우트 등록 ...</span>
+
+   <span class="c">// 서버를 별도 고루틴에서 실행한다 (아래 시그널 대기를 블로킹하지 않도록)</span>
+   <span class="k">go func</span>() {
+      <span class="k">if</span> err := e.Start(<span class="s">":8080"</span>); err != <span class="k">nil</span> &amp;&amp; !errors.Is(err, http.ErrServerClosed) {
+         e.Logger.Fatalf(<span class="s">"server start failed: %v"</span>, err)
+      }
+   }()
+
+   <span class="c">// SIGTERM(쿠버네티스), SIGINT(로컬 Ctrl+C)를 받는다</span>
+   quit := make(<span class="k">chan</span> os.Signal, <span class="n">1</span>)
+   signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+   &lt;-quit
+
+   <span class="c">// 새 요청은 거부하고, 진행 중인 요청은 최대 30초까지 마무리를 기다린다</span>
+   ctx, cancel := context.WithTimeout(context.Background(), <span class="n">30</span>*time.Second)
+   <span class="k">defer</span> cancel()
+
+   <span class="k">if</span> err := e.Shutdown(ctx); err != <span class="k">nil</span> {
+      e.Logger.Errorf(<span class="s">"graceful shutdown failed: %v"</span>, err)
+   }
+
+   <span class="c">// 리소스 정리 순서: 서버를 먼저 닫고 나서 DB를 닫는다.</span>
+   <span class="c">// 순서를 바꾸면 처리 중인 요청이 DB 접근에서 실패한다.</span>
+   <span class="k">if</span> err := db.Close(); err != <span class="k">nil</span> {
+      e.Logger.Errorf(<span class="s">"db close failed: %v"</span>, err)
+   }
+}</pre>
+
+      <div class="warn">
+        <p><b>SIGTERM을 아예 못 받는 경우가 있습니다.</b></p>
+        <p style="margin-top:6px">
+          Dockerfile에서 <code>ENTRYPOINT</code>를 shell 형식(<code>ENTRYPOINT /app/server</code>)으로 쓰면
+          <b>쉘이 PID 1이 되어 시그널이 앱에 전달되지 않습니다.</b>
+          반드시 exec 형식(<code>ENTRYPOINT ["/app/server"]</code>)을 씁니다. 이것도 좋은 답변 소재입니다.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ 07 마이그레이션 ============ -->
+    <section class="scene" id="s7" data-scene="migration" data-steps="5" data-speed="2000">
+      <header class="scene-head">
+        <span class="scene-num">07</span>
+        <h2>DB 마이그레이션 — 배포에서 <em>가장 위험한 부분</em></h2>
+        <p class="scene-lead">
+          애플리케이션은 롤백할 수 있지만 <b>스키마 변경은 되돌리기 어렵습니다.</b>
+          게다가 롤링 중에는 구 버전과 신 버전이 <b>같은 스키마를 동시에</b> 씁니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="warn" style="margin:0 0 16px">
+          <p><b>사고 시나리오</b></p>
+          <p style="margin-top:6px;font-family:var(--mono);font-size:12.5px">
+            1. 코드를 배포하면서 컬럼 이름을 <code>name → full_name</code>으로 변경<br>
+            2. 롤링 중 구 버전 파드가 아직 <code>name</code> 컬럼을 조회 → <b>500 에러 폭발</b><br>
+            3. 롤백해도 스키마는 이미 바뀌어 있어서 <b>복구가 안 된다</b>
+          </p>
+        </div>
+
+        <p style="margin:0 0 10px"><span class="lbl green">해결: 확장-수축 패턴 (Expand and Contract)</span></p>
+
+        <div class="mg">
+          <div class="stepline" id="mg1">
+            <span class="tagn">1 EXPAND</span>
+            <span><code>full_name</code> 컬럼을 <b>nullable로 추가</b>한다. 기존 코드는 영향 없음</span>
+          </div>
+          <div class="stepline" id="mg2">
+            <span class="tagn">2 DUAL WRITE</span>
+            <span>신규 코드 배포. <b>쓸 때는 name과 full_name 양쪽에</b>, 읽을 때는 name</span>
+          </div>
+          <div class="stepline" id="mg3">
+            <span class="tagn">3 BACKFILL</span>
+            <span>기존 데이터를 full_name으로 채운다 (<b>배치로 나눠서</b>)</span>
+          </div>
+          <div class="stepline" id="mg4">
+            <span class="tagn">4 SWITCH</span>
+            <span>읽기를 <b>full_name으로 전환</b>한 코드를 배포한다</span>
+          </div>
+          <div class="stepline" id="mg5">
+            <span class="tagn">5 CONTRACT</span>
+            <span>충분히 안정화된 후 <code>name</code> 컬럼을 제거한다</span>
+          </div>
+        </div>
+
+        <p style="margin:14px 0 0;text-align:center;font-size:14px;color:var(--green)" data-from="5">
+          번거롭지만 <b>모든 단계가 롤백 가능합니다.</b> 이게 목적입니다.
+        </p>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>먼저 <b>추가만</b> 합니다. 추가는 기존 코드를 깨지 않습니다.</p>
+        <p data-cap="2"><span class="k">02</span>양쪽에 쓰기 시작합니다. 아직 읽기는 옛 컬럼이라 롤백이 안전합니다.</p>
+        <p data-cap="3"><span class="k">03</span>과거 데이터를 채웁니다. 한 번에 다 하지 않고 나눠서 합니다.</p>
+        <p data-cap="4"><span class="k">04</span>이제 읽기를 새 컬럼으로 옮깁니다. 문제가 생기면 이전 배포로 롤백하면 됩니다.</p>
+        <p data-cap="5"><span class="k">05</span>마지막에 옛 컬럼을 제거합니다. <b>여기까지 오면 되돌릴 필요가 없는 상태</b>입니다.</p>
+      </div>
+
+      <div class="split" style="margin-top:18px">
+        <div class="pane">
+          <h4>온라인 DDL 주의</h4>
+          <pre class="code" style="margin-top:0"><span class="s">-- 상대적으로 안전</span>
+<span class="k">ALTER TABLE</span> orders <span class="k">ADD COLUMN</span> memo <span class="k">VARCHAR</span>(<span class="n">255</span>) <span class="k">NULL</span>;  <span class="c">-- INSTANT</span>
+<span class="k">ALTER TABLE</span> orders <span class="k">ADD INDEX</span> idx_status (status);       <span class="c">-- INPLACE</span>
+
+<span class="bad">-- 위험 (테이블 재생성 + 락)</span>
+<span class="k">ALTER TABLE</span> orders <span class="k">MODIFY COLUMN</span> amount <span class="k">BIGINT</span>;
+<span class="k">ALTER TABLE</span> orders <span class="k">CHANGE COLUMN</span> name full_name <span class="k">VARCHAR</span>(<span class="n">100</span>);</pre>
+          <p style="margin:10px 0 0;font-size:13px;color:var(--ink-2)">
+            큰 테이블은 <b>gh-ost</b>나 <b>pt-online-schema-change</b>로 무중단 변경을 합니다.
+            이름만 알아도 답변에 쓸 수 있습니다.
+          </p>
+        </div>
+        <div class="pane">
+          <h4>마이그레이션 실행 위치</h4>
+          <dl class="kv">
+            <dt>권장</dt><dd><b>K8s Job / initContainer</b> — 애플리케이션 배포 전에 한 번만 실행</dd>
+            <dt>위험</dt><dd><b>앱 시작 시 자동 실행</b> — 파드가 여러 개면 동시에 실행됩니다. 도구의 DB 락에 의존하게 되므로 권장되지 않습니다</dd>
+          </dl>
+          <pre class="code" style="margin-top:12px">migrate -path ./migrations \
+  -database <span class="s">"mysql://user:pass@tcp(host:3306)/db"</span> up</pre>
+        </div>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>DB 마이그레이션을 언급하는 것만으로도 차별화됩니다.</b></p>
+          <p>
+            배포에서 가장 위험한 부분인데 대부분 빼먹습니다.
+            "롤링 중 두 버전이 동시에 도는데 스키마 변경은 어떻게 하나요?"에
+            <b>확장-수축</b>으로 답할 수 있으면 주니어 중 상위권으로 인식됩니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 전략 비교 ============ -->
+    <section class="scene" id="s8">
+      <header class="scene-head">
+        <span class="scene-num">비교</span>
+        <h2>무중단 배포 전략 4가지</h2>
+      </header>
+
+      <table class="tbl">
+        <thead><tr><th>전략</th><th>방식</th><th>장점</th><th>단점</th></tr></thead>
+        <tbody>
+          <tr class="locked"><td>Recreate</td><td>다 내리고 새로 올린다</td><td>단순, 리소스 절약</td><td><b>다운타임 발생</b></td></tr>
+          <tr class="hit"><td>Rolling Update</td><td>일부씩 순차 교체</td><td>추가 리소스 적음, K8s 기본</td><td>두 버전이 동시에 존재</td></tr>
+          <tr><td>Blue/Green</td><td>새 환경 전체를 띄우고 한 번에 스위치</td><td><b>롤백이 즉시</b> (다시 스위치)</td><td>리소스 2배</td></tr>
+          <tr><td>Canary</td><td>소수 트래픽만 신 버전 → 지표 확인 → 점진 확대</td><td>위험 최소화, 실사용자 검증</td><td>구성 복잡, 관측 도구 필요</td></tr>
+        </tbody>
+      </table>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">설정과 시크릿 관리</h3>
+      <p class="stack-note" style="margin:0 0 12px">
+        원칙: <b>설정은 코드에서 분리하고, 시크릿은 절대 이미지나 저장소에 넣지 않는다</b> (12 Factor App).
+      </p>
+      <table class="tbl">
+        <tbody>
+          <tr><td>환경 변수</td><td>기본. 12 Factor의 권장 방식</td></tr>
+          <tr><td>K8s ConfigMap</td><td>비민감 설정 파일/값</td></tr>
+          <tr class="locked"><td>K8s Secret</td><td>민감 값. 단 <b>기본은 base64 인코딩일 뿐 암호화가 아니다</b></td></tr>
+          <tr><td>AWS Secrets Manager / Parameter Store</td><td>자동 로테이션, 감사 로그, IAM 기반 접근 제어</td></tr>
+          <tr><td>External Secrets Operator</td><td>Secrets Manager 값을 K8s Secret으로 자동 동기화</td></tr>
+        </tbody>
+      </table>
+
+      <div class="warn">
+        <p><b>"K8s Secret은 암호화된 건가요?" — 아닙니다. base64 인코딩입니다.</b></p>
+        <p style="margin-top:6px">
+          자주 물어보는 함정입니다. etcd 암호화(<code>EncryptionConfiguration</code>)를 켜거나
+          외부 시크릿 저장소를 써야 한다고 답해야 합니다.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ 검증 ============ -->
+    <section class="scene" id="s9">
+      <header class="scene-head">
+        <span class="scene-num">검증</span>
+        <h2>배포 후 무엇을 보나 — 네 가지 골든 시그널</h2>
+        <p class="scene-lead">
+          <b>지연시간(Latency), 트래픽(Traffic), 에러(Errors), 포화도(Saturation).</b>
+          이 네 개로 답하면 정리된 답변이 됩니다.
+        </p>
+      </header>
+
+      <table class="tbl">
+        <thead><tr><th>도구</th><th>배포 직후 볼 것</th></tr></thead>
+        <tbody>
+          <tr><td>Sentry</td><td>신규 에러 발생 여부, 에러율 급증. <b>릴리즈 태그를 붙여두면 어느 배포에서 터졌는지 바로 보인다</b></td></tr>
+          <tr><td>Grafana</td><td>p95/p99 응답 시간, 처리량(RPS), 에러율, CPU/메모리</td></tr>
+          <tr><td>CloudWatch</td><td>애플리케이션 로그, ALB 5xx 카운트, Target 헬스</td></tr>
+        </tbody>
+      </table>
+
+      <pre class="code">sentry.Init(sentry.ClientOptions{
+   Dsn:         os.Getenv(<span class="s">"SENTRY_DSN"</span>),
+   Environment: os.Getenv(<span class="s">"APP_ENV"</span>),   <span class="c">// production / staging</span>
+   Release:     os.Getenv(<span class="s">"GIT_SHA"</span>),   <span class="c">// 이미지 태그와 동일하게 → 에러 ↔ 배포 매칭</span>
+})</pre>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">CI 설정 예시 (GitHub Actions)</h3>
+      <pre class="code" style="margin-top:0"><span class="k">name</span>: deploy
+<span class="k">on</span>:
+  push:
+    branches: [main]
+
+<span class="k">jobs</span>:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      <span class="hl">id-token: write        <span class="c"># OIDC로 AWS 인증 (액세스 키를 저장소에 안 넣는 방법)</span></span>
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: <span class="s">'1.23'</span>
+          cache: <span class="k">true</span>        <span class="c"># 모듈 캐시로 빌드 시간 단축</span>
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+      - name: Test
+        run: go test <span class="hl">-race</span> -coverprofile=coverage.out ./...
+
+      <span class="c"># 액세스 키 대신 OIDC + IAM Role 사용 (시크릿 유출 위험 제거)</span>
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ap-northeast-<span class="n">2</span>
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - name: Build and push
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: ${{ github.sha }}
+        run: |
+          docker build -t $REGISTRY/myapp:$TAG .
+          docker push $REGISTRY/myapp:$TAG
+
+      - name: Deploy
+        run: |
+          kubectl set image deployment/myapp app=$REGISTRY/myapp:$TAG
+          kubectl rollout status deployment/myapp --timeout=5m</pre>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b><code>-race</code>와 OIDC 두 개만 챙겨도 인상이 다릅니다.</b></p>
+          <p>
+            <code>-race</code>는 Go 테스트에서 데이터 레이스를 잡아주고, CI에 넣어두는 게 관례입니다.
+            OIDC 인증은 액세스 키를 저장소 시크릿에 넣지 않는 방법이라 <b>보안 감각</b>을 보여줄 수 있습니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 정리 ============ -->
+    <section class="scene" id="s10">
+      <header class="scene-head">
+        <span class="scene-num">정리</span>
+        <h2>내 경험 서술 템플릿 — 면접에서 필요한 건 이 문단 하나다</h2>
+        <p class="scene-lead">빈칸을 채워서 <b>소리 내어</b> 연습합니다.</p>
+      </header>
+
+      <pre class="code" style="margin-top:0">제가 참여한 프로젝트에서는 ______(GitHub Actions / Jenkins)로 배포를 구성했습니다.
+
+main 브랜치에 머지되면 ______가 트리거되고,
+먼저 ______(린트 / 테스트)를 실행해서 실패하면 그 지점에서 중단시켰습니다.
+
+통과하면 Docker 이미지를 빌드했는데, ______(멀티 스테이지)를 적용해서
+이미지 크기를 ___MB에서 ___MB로 줄였습니다.
+태그는 ______(커밋 SHA)로 붙여서 어떤 커밋이 배포됐는지 추적할 수 있게 했습니다.
+
+이미지를 ______(ECR / Docker Hub)에 push하고,
+______(kubectl set image / docker compose / SSH 스크립트)로 배포했습니다.
+
+배포 중에 겪은 문제는 ______였고, ______해서 해결했습니다.
+
+배포 후에는 ______(헬스 체크 / Sentry / 로그)로 이상 여부를 확인했습니다.</pre>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">"배포 중에 겪은 문제" 후보 — 하나는 꼭 준비합니다</h3>
+      <ul class="checklist">
+        <li><b>무중단 배포인데 502가 났다</b> → graceful shutdown 미구현, preStop 부재 (06장면)</li>
+        <li><b>배포했는데 코드가 안 바뀌었다</b> → <code>latest</code> 태그 + 이미지 캐시 (03장면)</li>
+        <li><b>헬스 체크가 401을 반환해서 전체 트래픽이 끊겼다</b> → 인증 미들웨어 예외 처리 (<a href="./proxy.html#s7">프록시 편 07장면</a>)</li>
+        <li><b>컨테이너가 계속 재시작됐다</b> → 메모리 limit 초과 OOMKilled, 또는 liveness probe 오설정</li>
+        <li><b>환경 변수를 빼먹어서 staging 설정으로 production이 떴다</b> → 필수 환경 변수 검증 로직 추가</li>
+        <li><b>CI가 너무 느렸다</b> → 레이어 캐시 순서 조정, 의존성 캐시 도입</li>
+      </ul>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">자주 하는 실수</h3>
+      <ul class="checklist">
+        <li><b>안 해본 걸 해봤다고 말한다</b> → 배포 질문은 꼬리질문 밀도가 가장 높습니다. 한 번에 무너집니다. 선을 그어 답하는 게 훨씬 안전하고 실제로 더 좋은 평가를 받습니다</li>
+        <li><code>git push</code>하면 배포된다 수준으로만 말한다 → 각 단계에서 <b>무엇을 검증하는지</b>가 핵심입니다</li>
+        <li>롤백 이야기를 안 한다 → 배포를 아는 사람은 항상 롤백을 먼저 생각합니다</li>
+        <li>무중단 배포를 "롤링 업데이트로 합니다"에서 끝낸다 → <b>헬스 체크 + graceful shutdown이 없으면 롤링 업데이트도 무중단이 아닙니다</b></li>
+        <li>DB 마이그레이션을 언급하지 않는다 → 배포에서 가장 위험한 부분인데 대부분 빼먹습니다. 여기서 차이가 납니다</li>
+      </ul>
+    </section>
+
+  </div>
+
+  <div class="wrap pager">
+    <a href="./idempotency.html"><small>← 이전</small>04 결제 멱등성</a>
+    <a class="next" href="./index.html"><small>목록 →</small>전체 주제</a>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap row-flex">
+    <span>원문 노트: <a href="../deployment.md">deployment.md</a></span>
+    <span>기준: Docker · Kubernetes(EKS) · GitHub Actions · AWS ECR · Go/Echo</span>
+  </div>
+</footer>
+
+<script src="./assets/scene.js"></script>
+<script>
+(function () {
+  function watch(name, fn) {
+    var sc = document.querySelector('[data-scene="' + name + '"]');
+    if (!sc) return;
+    fn(0);
+    new MutationObserver(function () {
+      fn(parseInt(sc.dataset.step || '0', 10));
+    }).observe(sc, { attributes: true, attributeFilter: ['data-step'] });
+  }
+
+  /* 01 파이프라인 */
+  watch('pipeline', function (step) {
+    for (var i = 1; i <= 5; i++) {
+      var el = document.getElementById('p' + i);
+      if (!el) continue;
+      el.className = 'fstep' + (i === step ? ' on' : i < step ? ' done' : '');
+    }
+  });
+
+  /* 02 이미지 크기 */
+  watch('multistage', function (step) {
+    var b1 = document.getElementById('blk1');
+    var b2 = document.getElementById('blk2');
+    if (b1) b1.style.height = step >= 1 ? (step >= 2 ? '120px' : '60px') : '0';
+    if (b2) b2.style.height = step >= 3 ? '14px' : '0';
+  });
+
+  /* 04 롤링 업데이트 */
+  var podrow = document.getElementById('podrow');
+  var STATES = {
+    /* 각 스텝의 파드 상태 배열 + 사용 가능 용량 */
+    0: { pods: ['old', 'old', 'old', 'old'], cap: 4 },
+    1: { pods: ['old', 'old', 'old', 'old'], cap: 4 },
+    2: { pods: ['old', 'old', 'old', 'old', 'boot'], cap: 4 },
+    3: { pods: ['term', 'old', 'old', 'old', 'new'], cap: 4 },
+    4: { pods: ['gone', 'old', 'old', 'new', 'new'], cap: 4 },
+    5: { pods: ['new', 'new', 'new', 'new'], cap: 4 },
+    6: { pods: ['term', 'old', 'old', 'boot'], cap: 3 }
+  };
+  var LABEL = {
+    old: 'v1<small>Ready</small>',
+    "new": 'v2<small>Ready</small>',
+    boot: 'v2<small>Booting</small>',
+    term: 'v1<small>Terminating</small>',
+    gone: 'v1<small>종료됨</small>'
+  };
+  watch('rolling', function (step) {
+    if (!podrow) return;
+    var st = STATES[step] || STATES[0];
+    podrow.innerHTML = '';
+    st.pods.forEach(function (k) {
+      var d = document.createElement('div');
+      d.className = 'pod ' + k;
+      d.innerHTML = LABEL[k] || k;
+      podrow.appendChild(d);
+    });
+    var bar = document.getElementById('capbar');
+    var val = document.getElementById('capval');
+    if (bar) bar.style.width = (st.cap / 4 * 100) + '%';
+    if (val) {
+      val.textContent = st.cap + ' / 4';
+      val.style.color = st.cap < 4 ? 'var(--rose)' : 'var(--green)';
+    }
+  });
+
+  /* 05 Probe */
+  watch('probe', function (step) {
+    ['pb1', 'pb2', 'pb3'].forEach(function (id, i) {
+      var el = document.getElementById(id);
+      if (el) el.className = step === i + 1 ? 'hit' : '';
+    });
+    var live = step >= 4 ? 'pod term' : 'pod new';
+    var ready = step >= 4 ? 'pod boot' : 'pod new';
+    [1, 2, 3, 4].forEach(function (n) {
+      var a = document.getElementById('lp' + n);
+      var b = document.getElementById('rp' + n);
+      if (a) a.className = live;
+      if (b) b.className = ready;
+    });
+  });
+
+  /* 06 preStop 타임라인 */
+  watch('prestop', function (step) {
+    var marks = ['m1', 'm2', 'm3', 'm4'];
+    marks.forEach(function (id, i) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      var cls = 'mk';
+      if (step >= 3 && i === 2) cls += ' bad';
+      else if (i + 1 <= step) cls += ' on';
+      el.className = cls;
+    });
+  });
+
+  /* 07 마이그레이션 */
+  watch('migration', function (step) {
+    for (var i = 1; i <= 5; i++) {
+      var el = document.getElementById('mg' + i);
+      if (!el) continue;
+      el.className = 'stepline' + (i === step ? ' on' : i < step ? ' done' : '');
+    }
+  });
+})();
+</script>
+</body>
+</html>

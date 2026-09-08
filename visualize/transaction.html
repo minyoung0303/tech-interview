@@ -1,0 +1,967 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>트랜잭션 시각화 — ACID · 격리 수준 · MVCC · 데드락</title>
+<meta name="description" content="트랜잭션을 애니메이션으로 이해하기. ACID, 격리 수준과 이상 현상, MVCC의 ReadView, Lost Update, 데드락, 락과 인덱스의 관계.">
+<link rel="stylesheet" href="./assets/base.css">
+<style>
+/* ── 이 페이지 전용 상태 전환 ───────────────────────────────── */
+
+/* 01 원자성 */
+[data-scene="atomic"][data-step="1"] .tx-wrap,
+[data-scene="atomic"][data-step="2"] .tx-wrap { border-color: rgba(94,231,245,.5); background: rgba(94,231,245,.04); }
+[data-scene="atomic"][data-step="3"] .tx-wrap { border-color: rgba(251,113,133,.55); background: rgba(251,113,133,.06); }
+[data-scene="atomic"][data-step="5"] .tx-wrap { border-color: rgba(69,217,154,.5); background: rgba(69,217,154,.04); }
+[data-scene="atomic"][data-step="3"] .stage { animation: shake .45s var(--ease); }
+
+/* 02 ACID */
+.acid-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+@media (max-width: 640px) { .acid-grid { grid-template-columns: repeat(2, 1fr); } }
+.acid-grid .t {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 12px 11px;
+  background: rgba(255,255,255,.022);
+  transition: all .45s var(--ease);
+}
+.acid-grid .t .big { font-family: var(--mono); font-size: 21px; font-weight: 800; color: var(--ink-3); transition: color .45s; }
+.acid-grid .t h4 { margin: 2px 0 6px; font-size: 12.5px; color: var(--ink-2); }
+.acid-grid .t p { margin: 0; font-size: 11.5px; color: var(--ink-3); line-height: 1.55; }
+[data-scene="acid"][data-step="1"] .t:nth-child(1),
+[data-scene="acid"][data-step="2"] .t:nth-child(2),
+[data-scene="acid"][data-step="3"] .t:nth-child(3),
+[data-scene="acid"][data-step="4"] .t:nth-child(4) {
+  border-color: rgba(94,231,245,.5);
+  background: rgba(94,231,245,.07);
+  transform: translateY(-3px);
+}
+[data-scene="acid"][data-step="1"] .t:nth-child(1) .big,
+[data-scene="acid"][data-step="2"] .t:nth-child(2) .big,
+[data-scene="acid"][data-step="3"] .t:nth-child(3) .big,
+[data-scene="acid"][data-step="4"] .t:nth-child(4) .big { color: var(--cyan); }
+
+/* 03 이상 현상 */
+[data-scene="anomaly"] .track .ev { transition: all .45s var(--ease); }
+
+/* 05 RC vs RR */
+.iso-read { font-family: var(--mono); font-size: 20px; font-weight: 800; }
+.iso-read.same { color: var(--green); }
+.iso-read.diff { color: var(--rose); }
+
+/* 06 Lost Update */
+[data-scene="lost"][data-step="5"] .final { color: var(--rose); }
+
+/* 07 데드락 */
+.dl {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 60px 34px;
+  align-items: center;
+  justify-items: center;
+  padding: 6px 0;
+}
+.dl .wait {
+  font-family: var(--mono);
+  font-size: 11px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(251,191,36,.45);
+  color: var(--amber);
+  background: rgba(251,191,36,.08);
+}
+[data-scene="deadlock"][data-step="4"] .dl .wait { border-color: rgba(251,113,133,.6); color: var(--rose); background: rgba(251,113,133,.1); }
+
+/* 08 락과 인덱스 */
+[data-scene="lockidx"] .rows i { transition: all .28s var(--ease); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#s1">본문으로 건너뛰기</a>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="home" href="./index.html">visualize<span>/</span>backend</a>
+    <nav aria-label="주제 바로가기">
+      <a href="./transaction.html" aria-current="page">트랜잭션</a>
+      <a href="./db-index.html">인덱스</a>
+      <a href="./proxy.html">프록시</a>
+      <a href="./idempotency.html">멱등성</a>
+      <a href="./deployment.html">배포</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero wrap">
+    <p class="eyebrow">01 · Transaction</p>
+    <h1><em>트랜잭션</em><br>전부 되거나, 전부 안 되게</h1>
+    <p>
+      면접 질문은 보통 이렇게 옵니다. <b>"트랜잭션을 아는 대로 다 설명해봐라."</b>
+      개방형 질문이라 지도를 먼저 그리는 쪽이 안전합니다.
+      ACID → 격리 수준 → MVCC와 락 → 실무 주의점. 이 순서로 8장면입니다.
+    </p>
+    <div class="hero-meta">
+      <span class="chip cyan">MySQL 8 / InnoDB</span>
+      <span class="chip violet">Go database/sql</span>
+      <span class="chip">8장면</span>
+    </div>
+  </section>
+
+  <nav class="scene-nav" aria-label="장면 목차">
+    <div class="wrap">
+      <a href="#s1">01 원자성</a>
+      <a href="#s2">02 ACID</a>
+      <a href="#s3">03 이상 현상</a>
+      <a href="#s4">04 MVCC</a>
+      <a href="#s5">05 RC vs RR</a>
+      <a href="#s6">06 Lost Update</a>
+      <a href="#s7">07 데드락</a>
+      <a href="#s8">08 락 = 인덱스</a>
+      <a href="#s9">실무 주의점</a>
+      <a href="#s10">정리</a>
+    </div>
+  </nav>
+
+  <div class="wrap scenes">
+
+    <!-- ============ 01 원자성 ============ -->
+    <section class="scene" id="s1" data-scene="atomic" data-steps="5" data-speed="1700">
+      <header class="scene-head">
+        <span class="scene-num">01</span>
+        <h2>트랜잭션 — 여러 작업을 하나의 논리적 단위로 묶는다</h2>
+        <p class="scene-lead">
+          A에서 3,000원을 빼고 B에 3,000원을 넣는다. <b>둘 중 하나만 되면 돈이 사라집니다.</b>
+          그래서 두 작업을 하나로 묶고, 실패하면 통째로 되돌립니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="txbox tx-wrap">
+          <span class="tag">
+            <span class="morph">
+              <span data-until="0">idle</span>
+              <span data-at="1,2">BEGIN</span>
+              <span data-at="3">ERROR</span>
+              <span data-at="4">ROLLBACK</span>
+              <span data-at="5">DONE</span>
+            </span>
+          </span>
+
+          <div class="row-flex center" style="gap:16px">
+            <div class="node cyan" style="min-width:118px">
+              A 계좌
+              <small class="morph" style="min-height:1.5em">
+                <span data-until="1">10,000원</span>
+                <span data-at="2,3,4">7,000원</span>
+                <span data-from="5">10,000원</span>
+              </small>
+            </div>
+
+            <div class="arrow cyan" style="max-width:120px">
+              <span class="pulse" data-at="2"></span>
+            </div>
+
+            <div class="node violet" style="min-width:118px">
+              B 계좌
+              <small>0원</small>
+            </div>
+          </div>
+
+          <div class="row-flex center" style="margin-top:14px;gap:8px">
+            <span class="lbl cyan" data-at="1">1) BEGIN</span>
+            <span class="lbl cyan" data-at="2">2) UPDATE A -3,000</span>
+            <span class="lbl rose" data-at="3">3) 💥 여기서 서버가 죽는다</span>
+            <span class="lbl violet" data-at="4">4) undo log로 되돌린다</span>
+            <span class="lbl green" data-from="5">5) 아무 일도 없던 상태</span>
+          </div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px" data-from="4">
+          <span class="lbl violet">undo log</span>
+          <span class="lbl">A.balance = 10,000 (변경 전 값)</span>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>BEGIN. 이 순간부터 커밋 전까지의 변경은 아직 확정이 아닙니다.</p>
+        <p data-cap="2"><span class="k">02</span>A에서 3,000원 차감. 아직 B에는 안 넣었으니 <b>돈이 공중에 떠 있는 상태</b>입니다.</p>
+        <p data-cap="3"><span class="k">03</span>여기서 장애가 납니다. 원자성이 없으면 3,000원은 그대로 사라집니다.</p>
+        <p data-cap="4"><span class="k">04</span>InnoDB는 변경 전 값을 <b>undo log</b>에 미리 적어둡니다. 그걸로 되돌립니다.</p>
+        <p data-cap="5"><span class="k">05</span>결과는 "부분 성공"이 아니라 <b>"아무 일도 없었음"</b>. 이게 원자성입니다.</p>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>원자성은 "성공을 보장"하는 게 아니라 "중간 상태를 남기지 않는 것"입니다.</b></p>
+          <p>실패는 얼마든지 할 수 있습니다. 실패했을 때 절반만 반영된 상태로 끝나지 않는 게 핵심입니다.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 02 ACID ============ -->
+    <section class="scene" id="s2" data-scene="acid" data-steps="4" data-speed="2100">
+      <header class="scene-head">
+        <span class="scene-num">02</span>
+        <h2>ACID — 네 글자를 나열하지 말고, InnoDB가 <em>어떻게</em> 구현하는지 말한다</h2>
+        <p class="scene-lead">
+          여기서 점수가 갈립니다. 이름만 아는 사람과 구현 장치를 아는 사람의 차이입니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="acid-grid">
+          <div class="t">
+            <div class="big">A</div>
+            <h4>Atomicity 원자성</h4>
+            <p>전부 반영 또는 전부 취소</p>
+            <p style="margin-top:7px"><span class="lbl violet">undo log</span></p>
+          </div>
+          <div class="t">
+            <div class="big">C</div>
+            <h4>Consistency 일관성</h4>
+            <p>제약 조건이 깨지지 않음</p>
+            <p style="margin-top:7px"><span class="lbl">PK / FK / UNIQUE</span></p>
+          </div>
+          <div class="t">
+            <div class="big">I</div>
+            <h4>Isolation 격리성</h4>
+            <p>동시 트랜잭션이 서로 간섭하지 않음</p>
+            <p style="margin-top:7px"><span class="lbl cyan">MVCC + 락</span></p>
+          </div>
+          <div class="t">
+            <div class="big">D</div>
+            <h4>Durability 지속성</h4>
+            <p>커밋된 건 장애가 나도 남는다</p>
+            <p style="margin-top:7px"><span class="lbl green">redo log (WAL)</span></p>
+          </div>
+        </div>
+
+        <!-- D 설명: 커밋하면 디스크에 바로 쓰이나? -->
+        <div style="margin-top:18px" data-at="4">
+          <div class="row-flex center" style="gap:10px">
+            <div class="node cyan">COMMIT</div>
+            <div class="arrow green" style="max-width:70px"><span class="pulse" style="background:var(--green);box-shadow:0 0 12px 2px rgba(69,217,154,.6)"></span></div>
+            <div class="node green">redo log<small>디스크에 flush</small></div>
+            <div class="arrow" style="max-width:70px"></div>
+            <div class="node amber" style="opacity:.7">데이터 파일<small>나중에 (더티 페이지)</small></div>
+          </div>
+          <p class="stack-note" style="text-align:center">
+            커밋이 보장하는 건 <b style="color:var(--green)">redo log의 flush</b>입니다. 데이터 파일에 바로 쓰이는 게 아닙니다.
+          </p>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">A</span>원자성 → <b>undo log</b>. 변경 전 값을 적어두고 롤백 시 되돌립니다.</p>
+        <p data-cap="2"><span class="k">C</span>일관성 → 제약 조건과 트리거. 트랜잭션 전후로 규칙이 깨지지 않습니다.</p>
+        <p data-cap="3"><span class="k">I</span>격리성 → <b>MVCC + 락</b>. 이 두 개가 격리 수준의 실제 구현체입니다.</p>
+        <p data-cap="4"><span class="k">D</span>지속성 → <b>redo log(WAL)</b>. 장애 시 재시작하면서 redo log를 재생해 복구합니다.</p>
+      </div>
+
+      <pre class="code"><span class="c">-- 지속성의 강도를 정하는 설정 (꼬리질문 단골)</span>
+innodb_flush_log_at_trx_commit = <span class="n">1</span>  <span class="c">-- 기본. 커밋마다 flush + fsync. 가장 안전/가장 느림</span>
+                               = <span class="n">2</span>  <span class="c">-- OS 버퍼까지만. MySQL이 죽어도 살지만 OS가 죽으면 유실</span>
+                               = <span class="n">0</span>  <span class="c">-- 1초마다. 가장 빠르고 가장 위험</span></pre>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>"커밋하면 디스크에 바로 쓰이나요?"에 "네"라고 답하면 반쯤 틀립니다.</b></p>
+          <p>
+            데이터 파일이 아니라 <b>redo log가 먼저</b> 디스크로 갑니다. 이게 WAL(Write-Ahead Logging)이고,
+            순차 쓰기라서 빠릅니다. 데이터 파일 반영은 나중에 천천히 일어납니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 03 이상 현상 ============ -->
+    <section class="scene" id="s3" data-scene="anomaly" data-steps="6" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">03</span>
+        <h2>격리 수준은 <em>세 가지 이상 현상</em>을 얼마나 막는지로 정해진다</h2>
+        <p class="scene-lead">
+          이상 현상을 먼저 이해하면 격리 수준 표는 자동으로 외워집니다. 순서대로 하나씩 재현합니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="lanes">
+          <div class="lane">
+            <span class="who">T1</span>
+            <div class="track">
+              <span class="ev cyan" style="left:12%" data-from="1">SELECT balance</span>
+              <span class="ev cyan" style="left:52%" data-from="3">SELECT balance <span data-from="4">again</span></span>
+              <span class="ev cyan" style="left:88%" data-from="5">SELECT count(*)</span>
+            </div>
+          </div>
+          <div class="lane">
+            <span class="who">T2</span>
+            <div class="track">
+              <span class="ev amber" style="left:30%" data-at="1,2">UPDATE (미커밋)</span>
+              <span class="ev green" style="left:34%" data-from="3" data-until="4">UPDATE + COMMIT</span>
+              <span class="ev violet" style="left:70%" data-from="5">INSERT + COMMIT</span>
+            </div>
+          </div>
+        </div>
+        <div class="timeaxis">
+          <span style="left:0%">시간 →</span>
+        </div>
+
+        <div class="swapbox" style="margin-top:20px;min-height:96px">
+          <div class="layer" data-at="1,2">
+            <div class="pane bad">
+              <h4>① Dirty Read — 커밋 안 된 값을 읽는다</h4>
+              <p style="margin:0;font-size:13.5px;color:var(--ink-2)">
+                T2가 아직 커밋하지 않은 변경을 T1이 읽습니다. T2가 롤백하면 T1은
+                <b style="color:var(--rose)">존재하지 않았던 값</b>으로 판단을 내린 셈이 됩니다.
+              </p>
+              <p style="margin:8px 0 0"><span class="lbl rose">READ UNCOMMITTED에서만 발생</span></p>
+            </div>
+          </div>
+          <div class="layer" data-at="3,4">
+            <div class="pane bad">
+              <h4>② Non-Repeatable Read — 같은 행을 두 번 읽었는데 값이 다르다</h4>
+              <p style="margin:0;font-size:13.5px;color:var(--ink-2)">
+                사이에 T2가 UPDATE 후 커밋했습니다. T1은 한 트랜잭션 안에서
+                <b style="color:var(--rose)">10,000 → 7,000</b> 두 값을 보게 됩니다.
+              </p>
+              <p style="margin:8px 0 0"><span class="lbl amber">READ COMMITTED까지 발생</span></p>
+            </div>
+          </div>
+          <div class="layer" data-at="5,6">
+            <div class="pane bad">
+              <h4>③ Phantom Read — 없던 행이 나타난다</h4>
+              <p style="margin:0;font-size:13.5px;color:var(--ink-2)">
+                같은 조건으로 다시 조회했는데 T2가 INSERT한 행이 끼어 있습니다.
+                값이 아니라 <b style="color:var(--rose)">결과 집합</b>이 바뀝니다.
+              </p>
+              <p style="margin:8px 0 0"><span class="lbl green">MySQL RR은 이걸 상당 부분 막는다 →</span></p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>T1이 조회하는 사이 T2가 아직 <b>커밋하지 않은</b> 변경을 만듭니다.</p>
+        <p data-cap="2"><span class="k">02</span>T1이 그 미커밋 값을 읽으면 <b>Dirty Read</b>입니다.</p>
+        <p data-cap="3"><span class="k">03</span>이번엔 T2가 UPDATE 후 <b>커밋까지</b> 합니다.</p>
+        <p data-cap="4"><span class="k">04</span>T1이 같은 행을 다시 읽으면 값이 달라져 있습니다 → <b>Non-Repeatable Read</b>.</p>
+        <p data-cap="5"><span class="k">05</span>T2가 새 행을 INSERT하고 커밋합니다.</p>
+        <p data-cap="6"><span class="k">06</span>T1이 같은 조건으로 세면 개수가 늘어나 있습니다 → <b>Phantom Read</b>.</p>
+      </div>
+
+      <table class="tbl" style="margin-top:18px">
+        <caption>격리 수준 4단계 — 위로 갈수록 동시성이 좋고, 아래로 갈수록 안전하다</caption>
+        <thead>
+          <tr><th>수준</th><th>Dirty</th><th>Non-Repeatable</th><th>Phantom</th><th>기본값인 DB</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>READ UNCOMMITTED</td><td>O</td><td>O</td><td>O</td><td>—</td></tr>
+          <tr><td>READ COMMITTED</td><td class="mark">X</td><td>O</td><td>O</td><td>PostgreSQL / Oracle</td></tr>
+          <tr class="hit"><td>REPEATABLE READ</td><td>X</td><td>X</td><td>△</td><td>MySQL InnoDB</td></tr>
+          <tr><td>SERIALIZABLE</td><td class="mark">X</td><td class="mark">X</td><td class="mark">X</td><td>—</td></tr>
+        </tbody>
+      </table>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>MySQL 기본값은 REPEATABLE READ입니다. READ COMMITTED라고 답하면 그건 PostgreSQL/Oracle입니다.</b></p>
+          <p>
+            그리고 표의 △가 중요합니다. 표준 스펙상 RR은 팬텀을 허용하지만 InnoDB는 두 장치로 막습니다.
+            일반 SELECT는 <b>MVCC 스냅샷</b>을 읽어서 새 행이 안 보이고,
+            <code>SELECT ... FOR UPDATE</code>는 <b>갭 락 / 넥스트키 락</b>으로 범위 자체를 잠가 INSERT를 차단합니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 04 MVCC ============ -->
+    <section class="scene" id="s4" data-scene="mvcc" data-steps="5" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">04</span>
+        <h2>MVCC — 읽기가 쓰기를 막지 않고, 쓰기가 읽기를 막지 않는다</h2>
+        <p class="scene-lead">
+          같은 행의 <b>여러 버전</b>을 유지해서 각 트랜잭션이 자기 시점의 버전을 읽습니다.
+          그래서 락 없이도 일관된 읽기가 됩니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <p class="stack-note" style="margin:0 0 12px">
+          모든 행에는 숨은 컬럼이 붙어 있습니다 —
+          <span class="lbl">DB_TRX_ID</span> <span class="lbl">DB_ROLL_PTR</span> <span class="lbl">DB_ROW_ID</span>
+        </p>
+
+        <div class="chain collapse" data-until="1">
+          <div class="ver head">
+            balance = 10,000
+            <span class="trx">trx_id 100 · 유일한 버전</span>
+          </div>
+          <span class="ptr">— DB_ROLL_PTR → NULL</span>
+        </div>
+
+        <div class="chain collapse" data-from="2">
+          <div class="ver head">
+            balance = 7,000
+            <span class="trx">trx_id 205 · 최신</span>
+          </div>
+          <span class="ptr">— DB_ROLL_PTR →</span>
+          <div class="ver undo">
+            balance = 10,000
+            <span class="trx">trx 100 · undo log</span>
+          </div>
+          <span class="ptr" data-from="3">→</span>
+          <div class="ver undo" data-from="3">
+            balance = 12,000
+            <span class="trx">trx 88 · undo log</span>
+          </div>
+        </div>
+
+        <div class="row-flex" style="margin-top:20px;gap:12px" data-from="4">
+          <div class="node cyan" style="min-width:150px">
+            T1의 ReadView
+            <small>내가 볼 수 있는 trx: &lt; 200</small>
+          </div>
+          <div class="arrow cyan" style="max-width:90px"><span class="pulse"></span></div>
+          <div class="node" style="min-width:170px" data-from="5">
+            <span style="color:var(--cyan)">balance = 10,000</span>
+            <small>trx 205는 안 보임 → 체인을 거슬러 올라가 trx 100 버전을 읽는다</small>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>처음엔 버전이 하나입니다. <code>DB_TRX_ID</code>가 마지막 변경 트랜잭션을 가리킵니다.</p>
+        <p data-cap="2"><span class="k">02</span>UPDATE하면 이전 버전이 <b>undo log로 밀려나고</b> <code>DB_ROLL_PTR</code>로 연결됩니다.</p>
+        <p data-cap="3"><span class="k">03</span>UPDATE가 반복되면 <b>버전 체인</b>이 길어집니다. 여기가 MVCC의 비용 지점입니다.</p>
+        <p data-cap="4"><span class="k">04</span>읽는 쪽은 <b>ReadView</b>를 만듭니다. "내가 볼 수 있는 트랜잭션 ID 집합"입니다.</p>
+        <p data-cap="5"><span class="k">05</span>볼 수 없는 버전이면 체인을 거슬러 올라가 <b>볼 수 있는 가장 최신 버전</b>을 찾습니다.</p>
+      </div>
+
+      <div class="warn">
+        <p><b>MVCC의 단점 = 긴 트랜잭션이 운영 DB를 망가뜨리는 경로</b></p>
+        <p style="margin-top:6px">
+          오래 열려 있는 트랜잭션이 있으면, 그 트랜잭션이 봐야 하는 옛 버전들을 지울 수 없습니다.
+          undo 영역이 계속 커지고(History list length 증가), 버전 체인이 길어져 읽기도 느려집니다.
+          purge 스레드가 정리하려 해도 긴 트랜잭션이 막습니다.
+          <b>배치나 리포트용 긴 트랜잭션</b>이 대표적인 원인입니다.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ 05 RC vs RR ============ -->
+    <section class="scene" id="s5" data-scene="isolation" data-steps="4" data-speed="2000">
+      <header class="scene-head">
+        <span class="scene-num">05</span>
+        <h2>READ COMMITTED와 REPEATABLE READ의 차이는 <em>딱 한 줄</em>이다</h2>
+        <p class="scene-lead">
+          <b>ReadView를 언제 만드느냐.</b> 이 한 줄이 두 격리 수준의 모든 동작 차이를 설명합니다.
+          같은 시나리오를 나란히 돌려봅니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="split">
+          <div class="pane bad">
+            <h4>READ COMMITTED — SELECT마다 새 ReadView</h4>
+            <div class="col-flex" style="gap:8px">
+              <div class="row-flex between">
+                <span class="lbl">1차 SELECT</span>
+                <span class="iso-read morph" style="min-width:5ch">
+                  <span data-until="1">—</span>
+                  <span data-from="2">10,000</span>
+                </span>
+              </div>
+              <div class="row-flex between" data-from="2">
+                <span class="lbl amber">T2가 7,000으로 UPDATE + COMMIT</span>
+              </div>
+              <div class="row-flex between">
+                <span class="lbl">2차 SELECT</span>
+                <span class="iso-read diff morph" style="min-width:5ch">
+                  <span data-until="2">—</span>
+                  <span data-from="3">7,000</span>
+                </span>
+              </div>
+              <p style="margin:4px 0 0;font-size:13px;color:var(--rose)" data-from="4">
+                값이 바뀌었다 → Non-Repeatable Read 발생
+              </p>
+            </div>
+          </div>
+
+          <div class="pane good">
+            <h4>REPEATABLE READ — 첫 읽기 때 만든 ReadView를 끝까지 재사용</h4>
+            <div class="col-flex" style="gap:8px">
+              <div class="row-flex between">
+                <span class="lbl">1차 SELECT</span>
+                <span class="iso-read morph" style="min-width:5ch">
+                  <span data-until="1">—</span>
+                  <span data-from="2">10,000</span>
+                </span>
+              </div>
+              <div class="row-flex between" data-from="2">
+                <span class="lbl amber">T2가 7,000으로 UPDATE + COMMIT</span>
+              </div>
+              <div class="row-flex between">
+                <span class="lbl">2차 SELECT</span>
+                <span class="iso-read same morph" style="min-width:5ch">
+                  <span data-until="2">—</span>
+                  <span data-from="3">10,000</span>
+                </span>
+              </div>
+              <p style="margin:4px 0 0;font-size:13px;color:var(--green)" data-from="4">
+                같은 스냅샷을 계속 읽는다 → 반복 읽기 일관성
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>같은 트랜잭션 안에서 같은 행을 두 번 읽는 시나리오입니다.</p>
+        <p data-cap="2"><span class="k">02</span>1차 SELECT. 양쪽 다 10,000을 읽습니다. 여기까지는 같습니다.</p>
+        <p data-cap="3"><span class="k">03</span>중간에 T2가 7,000으로 바꾸고 커밋합니다. 2차 SELECT의 결과가 갈립니다.</p>
+        <p data-cap="4"><span class="k">04</span>차이의 원인은 격리 수준 이름이 아니라 <b>ReadView 생성 시점</b>입니다.</p>
+      </div>
+
+      <pre class="code"><span class="c">-- 확인 / 변경</span>
+<span class="k">SELECT</span> @@transaction_isolation;         <span class="c">-- 현재 세션</span>
+<span class="k">SELECT</span> @@global.transaction_isolation;  <span class="c">-- 전역</span>
+<span class="k">SET SESSION TRANSACTION ISOLATION LEVEL</span> READ COMMITTED;</pre>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>"ReadView를 SELECT마다 만드는가, 트랜잭션 첫 읽기에 한 번 만드는가."</b></p>
+          <p>
+            이 문장을 말하면 깊이가 인정됩니다. 격리 수준을 표로만 외운 사람은 이 설명을 못 합니다.
+            덧붙여 SERIALIZABLE에서는 평범한 <code>SELECT</code>도 <code>SELECT ... FOR SHARE</code>로 바뀌어
+            공유 락을 잡기 때문에 읽기만 해도 쓰기를 막습니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 06 Lost Update ============ -->
+    <section class="scene" id="s6" data-scene="lost" data-steps="5" data-speed="1750">
+      <header class="scene-head">
+        <span class="scene-num">06</span>
+        <h2>함정 — Lost Update는 트랜잭션을 걸어도 막히지 않는다</h2>
+        <p class="scene-lead">
+          "트랜잭션 걸면 동시성 문제가 해결된다"는 답변에 대한 반례입니다.
+          재고 10개에서 두 명이 동시에 1개씩 사는 상황을 재현합니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="lanes">
+          <div class="lane">
+            <span class="who">T1</span>
+            <div class="track">
+              <span class="ev cyan" style="left:16%" data-from="1">SELECT stock → 10</span>
+              <span class="ev cyan" style="left:60%" data-from="3">UPDATE stock = 9</span>
+            </div>
+          </div>
+          <div class="lane">
+            <span class="who">T2</span>
+            <div class="track">
+              <span class="ev violet" style="left:22%" data-from="2">SELECT stock → 10</span>
+              <span class="ev rose" style="left:84%" data-from="4">UPDATE stock = 9</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:20px;gap:22px">
+          <div class="counter good" style="text-align:center">
+            <span class="morph" style="min-width:2ch">
+              <span data-until="4">2</span>
+              <span data-from="5">2</span>
+            </span>
+            <small>판매된 개수</small>
+          </div>
+          <span style="color:var(--ink-3);font-size:20px">vs</span>
+          <div class="counter final" style="text-align:center;color:var(--ink-2)">
+            <span class="morph" style="min-width:2ch">
+              <span data-until="2">10</span>
+              <span data-at="3,4">9</span>
+              <span data-from="5">9</span>
+            </span>
+            <small>실제 재고 (10에서 얼마나 줄었나)</small>
+          </div>
+        </div>
+
+        <p style="text-align:center;margin:14px 0 0;font-size:14px;color:var(--rose)" data-from="5">
+          2개 팔았는데 1개만 줄었다 — 한 트랜잭션의 UPDATE가 <b>덮어써져 사라졌습니다</b>
+        </p>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>T1이 재고를 읽습니다. 10개.</p>
+        <p data-cap="2"><span class="k">02</span>T2도 재고를 읽습니다. 역시 10개. <b>MVCC는 이걸 막지 않습니다.</b></p>
+        <p data-cap="3"><span class="k">03</span>T1이 애플리케이션에서 10 - 1 = 9를 계산해 <code>SET stock = 9</code>로 씁니다.</p>
+        <p data-cap="4"><span class="k">04</span>T2도 같은 계산으로 <code>SET stock = 9</code>를 씁니다. T1의 결과를 덮어씁니다.</p>
+        <p data-cap="5"><span class="k">05</span>2개 판매인데 재고는 1개만 줄었습니다. 이게 <b>Lost Update</b>입니다.</p>
+      </div>
+
+      <h3 style="font-size:15px;margin:22px 0 0;letter-spacing:-.01em">해결책 3가지 — 면접에서 자주 파고듭니다</h3>
+      <pre class="code"><span class="c">-- (1) 원자적 UPDATE — 가장 간단하고 가장 빠르다. 읽기 없이 DB에서 계산한다</span>
+<span class="k">UPDATE</span> products <span class="k">SET</span> stock = stock - <span class="n">1</span> <span class="k">WHERE</span> id = <span class="n">1</span> <span class="k">AND</span> stock &gt;= <span class="n">1</span>;
+<span class="c">-- 영향받은 행 수가 0이면 재고 부족으로 처리</span>
+
+<span class="c">-- (2) 비관적 락 — 읽고 나서 판단할 로직이 복잡할 때. 충돌이 잦으면 이쪽</span>
+<span class="k">SELECT</span> stock <span class="k">FROM</span> products <span class="k">WHERE</span> id = <span class="n">1</span> <span class="k">FOR UPDATE</span>;
+
+<span class="c">-- (3) 낙관적 락 — 버전 컬럼으로 충돌 감지, 충돌 시 재시도. 충돌이 드물면 이쪽</span>
+<span class="k">UPDATE</span> products <span class="k">SET</span> stock = <span class="n">9</span>, version = version + <span class="n">1</span>
+ <span class="k">WHERE</span> id = <span class="n">1</span> <span class="k">AND</span> version = <span class="n">3</span>;</pre>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>선택 기준은 충돌 빈도입니다.</b> 잦으면 비관적 락, 드물면 낙관적 락.</p>
+          <p>
+            그리고 "애플리케이션에서 읽어서 계산한 뒤 쓴다"는 패턴 자체가 위험 신호입니다.
+            DB 안에서 계산할 수 있으면 (1)번이 항상 정답에 가깝습니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 07 데드락 ============ -->
+    <section class="scene" id="s7" data-scene="deadlock" data-steps="5" data-speed="1700">
+      <header class="scene-head">
+        <span class="scene-num">07</span>
+        <h2>데드락 — 서로가 가진 락을 기다려 영원히 진행되지 않는 상태</h2>
+        <p class="scene-lead">
+          T1은 A를 잡고 B를 기다리고, T2는 B를 잡고 A를 기다립니다. 원이 닫히는 순간 아무도 못 움직입니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="dl">
+          <div class="node cyan" style="min-width:130px">T1<small>계좌 A → B 이체</small></div>
+          <div class="node violet" style="min-width:130px">T2<small>계좌 B → A 이체</small></div>
+
+          <div class="col-flex" style="align-items:center;gap:7px">
+            <span class="lbl cyan" data-from="1">🔒 A 락 획득</span>
+            <span class="wait" data-from="3">⏳ B 락 대기…</span>
+          </div>
+          <div class="col-flex" style="align-items:center;gap:7px">
+            <span class="lbl violet" data-from="2">🔒 B 락 획득</span>
+            <span class="wait" data-from="3">⏳ A 락 대기…</span>
+          </div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:6px" data-from="4">
+          <span class="lbl rose">↻ 순환 대기 — 아무도 앞으로 못 간다</span>
+        </div>
+
+        <div style="margin-top:18px" data-from="5">
+          <div class="row-flex center" style="gap:12px">
+            <div class="node amber">InnoDB<small>innodb_deadlock_detect = ON</small></div>
+            <div class="arrow rose" style="max-width:80px"><span class="pulse" style="background:var(--rose);box-shadow:0 0 12px 2px rgba(251,113,133,.6)"></span></div>
+            <div class="node rose">T2 강제 롤백<small>에러 1213 ER_LOCK_DEADLOCK</small></div>
+            <div class="arrow green" style="max-width:80px"></div>
+            <div class="node green">T1 진행<small>정상 커밋</small></div>
+          </div>
+          <p class="stack-note" style="text-align:center">
+            롤백 대상은 보통 <b>변경량이 적은 쪽</b>(undo log가 작은 쪽)입니다.
+          </p>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>T1이 A 계좌 행의 락을 잡습니다.</p>
+        <p data-cap="2"><span class="k">02</span>거의 동시에 T2가 B 계좌 행의 락을 잡습니다. 여기까지는 문제없습니다.</p>
+        <p data-cap="3"><span class="k">03</span>T1은 B를, T2는 A를 원합니다. 둘 다 상대가 쥔 락을 기다립니다.</p>
+        <p data-cap="4"><span class="k">04</span>대기 그래프에 <b>사이클</b>이 생겼습니다. 이게 데드락입니다.</p>
+        <p data-cap="5"><span class="k">05</span>InnoDB가 감지해서 한쪽을 롤백합니다. 클라이언트는 <b>1213</b> 에러를 받습니다.</p>
+      </div>
+
+      <div class="split" style="margin-top:18px">
+        <div class="pane">
+          <h4>에러 코드 구분</h4>
+          <dl class="kv">
+            <dt>1213</dt><dd>데드락 감지 → 자동 롤백. <b>재시도하면 대체로 성공</b></dd>
+            <dt>1205</dt><dd>락 대기 타임아웃(<code>innodb_lock_wait_timeout</code> 기본 50초)</dd>
+          </dl>
+          <pre class="code" style="margin-top:12px"><span class="k">SHOW ENGINE INNODB STATUS</span>;
+<span class="c">-- LATEST DETECTED DEADLOCK 섹션에서 원인 분석</span></pre>
+        </div>
+        <div class="pane good">
+          <h4>예방책 (효과 순서)</h4>
+          <ol style="margin:0;padding-left:20px;font-size:13.5px;color:var(--ink-2);line-height:1.85">
+            <li><b>락 획득 순서를 통일한다.</b> 항상 작은 ID부터. 가장 효과적</li>
+            <li><b>트랜잭션을 짧게 유지한다.</b> 락 보유 시간 = 충돌 확률</li>
+            <li><b>인덱스를 제대로 걸어 락 범위를 좁힌다</b> (다음 장면)</li>
+            <li><b>완전히 없앨 수 없다고 가정하고 재시도를 넣는다</b></li>
+          </ol>
+        </div>
+      </div>
+
+      <pre class="code"><span class="c">// Go — 지수 백오프 + 지터로 재시도. 같은 타이밍에 다시 부딪히는 걸 피한다</span>
+<span class="k">const</span> mysqlErrDeadlock = <span class="n">1213</span>
+
+<span class="k">func</span> isDeadlock(err <span class="k">error</span>) <span class="k">bool</span> {
+   <span class="k">var</span> me *mysql.MySQLError
+   <span class="k">return</span> errors.As(err, &amp;me) &amp;&amp; me.Number == mysqlErrDeadlock
+}
+
+<span class="k">for</span> attempt := <span class="n">1</span>; attempt &lt;= maxAttempts; attempt++ {
+   err = Transfer(ctx, db, from, to, amount)
+   <span class="k">if</span> err == <span class="k">nil</span> || !isDeadlock(err) { <span class="k">return</span> err }
+   backoff := time.Duration(<span class="n">1</span>&lt;&lt;attempt)*<span class="n">10</span>*time.Millisecond +
+      time.Duration(rand.Intn(<span class="n">20</span>))*time.Millisecond
+   <span class="k">select</span> {
+   <span class="k">case</span> &lt;-ctx.Done(): <span class="k">return</span> ctx.Err()
+   <span class="k">case</span> &lt;-time.After(backoff):
+   }
+}</pre>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>데드락은 "없애는" 게 아니라 "줄이고 대비하는" 것입니다.</b></p>
+          <p>
+            면접에서 예방책만 나열하고 재시도를 말하지 않으면 반쪽입니다.
+            1213은 정상적으로 발생할 수 있는 에러이고, 재시도 로직은 선택이 아니라 기본입니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 08 락 = 인덱스 ============ -->
+    <section class="scene" id="s8" data-scene="lockidx" data-steps="4" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">08</span>
+        <h2>InnoDB의 락은 행이 아니라 <em>인덱스 레코드</em>에 걸린다</h2>
+        <p class="scene-lead">
+          그래서 <b>인덱스 설계가 곧 락 범위 설계</b>입니다. "인덱스가 왜 중요한가"에 성능 말고 하나 더 답할 수 있는 카드입니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <p style="margin:0 0 14px;font-family:var(--mono);font-size:12.5px;color:var(--ink-2)">
+          UPDATE orders SET status = 'DONE' WHERE status = 'PENDING';
+          <span style="color:var(--ink-3)">— 대상은 100행 중 3행</span>
+        </p>
+
+        <div class="split">
+          <div class="pane bad">
+            <h4>status에 인덱스가 없다</h4>
+            <div class="rows" id="norows" style="margin-bottom:10px"></div>
+            <p style="margin:0;font-size:13px;color:var(--ink-2)">
+              풀 스캔하면서 <b style="color:var(--rose)">스캔한 모든 행에 락</b>을 겁니다.
+              사실상 테이블 전체가 잠깁니다.
+            </p>
+            <p style="margin:8px 0 0">
+              <span class="lbl rose morph" style="min-width:9ch">
+                <span data-until="1">잠긴 행 0</span>
+                <span data-at="2">잠긴 행 40</span>
+                <span data-from="3">잠긴 행 100</span>
+              </span>
+            </p>
+          </div>
+
+          <div class="pane good">
+            <h4>status에 인덱스가 있다</h4>
+            <div class="rows" id="idxrows" style="margin-bottom:10px"></div>
+            <p style="margin:0;font-size:13px;color:var(--ink-2)">
+              인덱스로 대상 3행만 찾아가 <b style="color:var(--green)">그 레코드에만 락</b>을 겁니다.
+              나머지 97행은 자유롭게 읽고 씁니다.
+            </p>
+            <p style="margin:8px 0 0">
+              <span class="lbl green morph" style="min-width:9ch">
+                <span data-until="1">잠긴 행 0</span>
+                <span data-from="2">잠긴 행 3</span>
+              </span>
+            </p>
+          </div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px" data-from="4">
+          <span class="lbl">레코드 락</span>
+          <span class="lbl violet">갭 락 — 레코드 사이 빈 구간에 INSERT 차단</span>
+          <span class="lbl cyan">넥스트키 락 — 레코드 락 + 앞 갭 락 (RR의 기본 동작)</span>
+          <span class="lbl amber">인텐션 락 IS/IX — 테이블 수준, DDL 충돌 감지용</span>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>같은 UPDATE 문을 인덱스 유무만 바꿔서 실행합니다.</p>
+        <p data-cap="2"><span class="k">02</span>왼쪽은 순차적으로 훑으며 지나간 행마다 락을 겁니다. 오른쪽은 3행만 찾아갑니다.</p>
+        <p data-cap="3"><span class="k">03</span>왼쪽은 끝까지 스캔해 <b>100행 전체가 잠깁니다</b>. 다른 트랜잭션은 전부 대기합니다.</p>
+        <p data-cap="4"><span class="k">04</span>락의 범위는 이렇게 나뉩니다. 팬텀을 막는 갭 락도 인덱스 위에 걸립니다.</p>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>인덱스는 성능 도구이면서 동시에 동시성 도구입니다.</b></p>
+          <p>
+            "락 대기가 늘었다 / 데드락이 늘었다"의 원인이 인덱스 부재인 경우가 아주 많습니다.
+            <a href="./db-index.html">인덱스 편</a>과 이어지는 지점이고, 두 주제를 연결해서 말하면 확실히 차별화됩니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 실무 주의점 ============ -->
+    <section class="scene" id="s9">
+      <header class="scene-head">
+        <span class="scene-num">차별점</span>
+        <h2>실무에서 주의한 점 — 여기가 신입/주니어를 가른다</h2>
+        <p class="scene-lead">
+          ACID와 격리 수준은 누구나 외워옵니다. 이 세 가지는 겪어본 사람만 말합니다.
+        </p>
+      </header>
+
+      <div class="split">
+        <div class="pane bad">
+          <h4>❌ 안티패턴</h4>
+          <pre class="code" style="margin-top:0"><span class="bad">tx 시작</span>
+  → DB 저장
+  → PG 결제 승인 API 호출 <span class="c">(3초)</span>
+  → DB 저장
+  → 커밋</pre>
+          <ul style="margin:12px 0 0;padding-left:19px;font-size:13.5px;color:var(--ink-2);line-height:1.8">
+            <li>DB 커넥션을 외부 응답 시간만큼 점유 → <b style="color:var(--rose)">커넥션 풀 고갈</b></li>
+            <li>락을 그 시간만큼 붙잡음 → 데드락·락 대기 급증</li>
+            <li><b style="color:var(--rose)">외부 호출은 롤백되지 않는다</b> → DB는 롤백됐는데 결제는 승인됨</li>
+          </ul>
+        </div>
+        <div class="pane good">
+          <h4>✅ 트랜잭션 경계를 쪼갠다</h4>
+          <pre class="code" style="margin-top:0"><span class="s">tx1</span>: pending 레코드 저장 후 커밋
+  → PG API 호출 <span class="c">(트랜잭션 밖)</span>
+<span class="s">tx2</span>: 결과로 상태 업데이트 후 커밋
+  → 미확정 건은 배치로 PG에 조회
+     <span class="c">(reconciliation)</span></pre>
+          <p style="margin:12px 0 0;font-size:13.5px;color:var(--ink-2)">
+            핵심은 <b style="color:var(--green)">외부 호출 전에 의도를 먼저 커밋</b>하는 것입니다.
+            어느 시점에 죽어도 추적 가능한 흔적이 남습니다.
+            <a href="./idempotency.html">멱등성 편</a>에서 이어집니다.
+          </p>
+        </div>
+      </div>
+
+      <ul class="checklist" style="margin-top:18px">
+        <li><b>트랜잭션 범위를 최소화한다.</b> 조회, 파일 업로드, 이미지 리사이즈, 로깅은 트랜잭션 밖으로. "핸들러 전체를 트랜잭션으로 감싸는" 구조는 나중에 반드시 문제가 됩니다.</li>
+        <li><b>커넥션 풀 크기와 트랜잭션 길이는 같은 문제다.</b> <code>SetMaxOpenConns</code>를 올리기 전에 트랜잭션 길이를 먼저 봅니다.</li>
+        <li><b>읽기 전용은 명시한다.</b> <code>sql.TxOptions{ReadOnly: true}</code>를 주면 InnoDB가 트랜잭션 ID 할당을 생략해 약간 더 빠릅니다.</li>
+      </ul>
+
+      <pre class="code"><span class="c">// Go 기본 패턴 — 커밋 성공 후의 Rollback은 sql.ErrTxDone을 반환하고 아무 일도 안 한다.</span>
+<span class="c">// 그래서 defer로 걸어두는 게 안전하다 (panic이나 early return에서도 정리됨).</span>
+<span class="k">func</span> withTx(ctx context.Context, db *sql.DB, fn <span class="k">func</span>(*sql.Tx) <span class="k">error</span>) <span class="k">error</span> {
+   tx, err := db.BeginTx(ctx, <span class="k">nil</span>)
+   <span class="k">if</span> err != <span class="k">nil</span> {
+      <span class="k">return</span> fmt.Errorf(<span class="s">"begin tx: %w"</span>, err)
+   }
+   <span class="k">defer func</span>() { _ = tx.Rollback() }()
+
+   <span class="k">if</span> err := fn(tx); err != <span class="k">nil</span> {
+      <span class="k">return</span> err
+   }
+   <span class="k">return</span> tx.Commit()
+}</pre>
+    </section>
+
+    <!-- ============ 정리 ============ -->
+    <section class="scene" id="s10">
+      <header class="scene-head">
+        <span class="scene-num">정리</span>
+        <h2>이 8장면을 한 문단으로</h2>
+      </header>
+      <div class="stage" style="min-height:auto">
+        <p style="margin:0;font-size:15px;line-height:1.95;color:var(--ink-2)">
+          트랜잭션은 여러 작업을 <b style="color:var(--ink)">하나의 논리적 단위</b>로 묶는 개념입니다.
+          성질은 ACID이고, InnoDB는 원자성을 <b style="color:var(--violet)">undo log</b>로,
+          지속성을 <b style="color:var(--green)">redo log(WAL)</b>로,
+          격리성을 <b style="color:var(--cyan)">MVCC와 락</b>으로 구현합니다.
+          격리 수준은 세 가지 이상 현상을 얼마나 막는지로 나뉘고, MySQL 기본은
+          <b style="color:var(--ink)">REPEATABLE READ</b>입니다.
+          READ COMMITTED와의 차이는 <b style="color:var(--cyan)">ReadView 생성 시점</b> 한 줄입니다.
+          단, 격리 수준이 모든 걸 해결하지는 않습니다.
+          <b style="color:var(--rose)">Lost Update</b>는 원자적 UPDATE나 락으로 직접 막아야 합니다.
+          락은 행이 아니라 <b style="color:var(--ink)">인덱스 레코드</b>에 걸리므로 인덱스 설계가 락 범위 설계이고,
+          데드락은 순서 통일·짧은 트랜잭션·재시도로 다룹니다.
+          실무에서는 <b style="color:var(--rose)">트랜잭션 안에서 외부 API를 호출하지 않는 것</b>이 가장 중요했습니다.
+        </p>
+      </div>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">자주 하는 실수</h3>
+      <ul class="checklist">
+        <li>ACID 네 글자만 나열하고 끝낸다 → 각각을 InnoDB가 <b>어떻게</b> 구현하는지까지 가야 합니다</li>
+        <li>격리 수준 이름만 외우고 <b>어떤 이상 현상을 막는지</b> 연결하지 못한다</li>
+        <li>MySQL 기본값을 READ COMMITTED로 답한다 (그건 PostgreSQL/Oracle)</li>
+        <li>"트랜잭션 걸면 동시성 문제가 해결된다"고 답한다 → <b>Lost Update 반례</b>가 있습니다</li>
+        <li>겪은 사례가 없다 → 데드락이든 락 대기든 커넥션 풀 고갈이든 <b>본인 경험 하나는 반드시 준비</b></li>
+      </ul>
+    </section>
+
+  </div>
+
+  <div class="wrap pager">
+    <a href="./index.html"><small>← 목록</small>전체 주제</a>
+    <a class="next" href="./db-index.html"><small>다음 →</small>02 인덱스</a>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap row-flex">
+    <span>원문 노트: <a href="../transaction.md">transaction.md</a></span>
+    <span>기준: MySQL 8.x / InnoDB · Go database/sql</span>
+  </div>
+</footer>
+
+<script src="./assets/scene.js"></script>
+<script>
+/* 08 장면: 행 스캔/락 시각화를 스텝에 맞춰 그린다 */
+(function () {
+  var TOTAL = 100;
+  var TARGET = [17, 48, 79]; // status = 'PENDING' 인 행 위치
+
+  function build(el) {
+    var frag = document.createDocumentFragment();
+    for (var i = 0; i < TOTAL; i++) frag.appendChild(document.createElement('i'));
+    el.appendChild(frag);
+  }
+
+  var noEl = document.getElementById('norows');
+  var idxEl = document.getElementById('idxrows');
+  if (!noEl || !idxEl) return;
+  build(noEl);
+  build(idxEl);
+
+  function paint(step) {
+    var scanned = step <= 1 ? 0 : step === 2 ? 40 : TOTAL;
+    var noKids = noEl.children;
+    for (var i = 0; i < TOTAL; i++) {
+      var c = '';
+      if (i < scanned) c = TARGET.indexOf(i) !== -1 ? 'hit' : 'lock';
+      noKids[i].className = c;
+    }
+    var idxKids = idxEl.children;
+    for (var j = 0; j < TOTAL; j++) {
+      var c2 = 'skip';
+      if (step >= 2 && TARGET.indexOf(j) !== -1) c2 = 'hit';
+      idxKids[j].className = c2;
+    }
+  }
+
+  paint(0);
+
+  var scene = document.querySelector('[data-scene="lockidx"]');
+  new MutationObserver(function () {
+    paint(parseInt(scene.dataset.step || '0', 10));
+  }).observe(scene, { attributes: true, attributeFilter: ['data-step'] });
+})();
+</script>
+</body>
+</html>
