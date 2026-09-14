@@ -1,0 +1,837 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DB 확장 시각화 — Read Replica vs 샤딩 · 복제 지연 · 샤드 키</title>
+<meta name="description" content="Read Replica와 샤딩의 차이를 확장 축 관점에서 애니메이션으로. 복제 지연이 생기는 과정, read-after-write 사고, 샤드 키 선택과 핫스팟, 샤딩하면 잃는 것까지.">
+<link rel="stylesheet" href="./assets/base.css">
+<style>
+/* 데이터 보유량 표시 */
+.holds { display: grid; gap: 6px; }
+.hold { display: grid; grid-template-columns: 86px 1fr 62px; gap: 9px; align-items: center; font-family: var(--mono); font-size: 11px; }
+.hold .nm { color: var(--ink-2); text-align: right; }
+.hold .t { height: 12px; border-radius: 999px; background: rgba(255,255,255,.05); border: 1px solid var(--line-soft); overflow: hidden; }
+.hold .t > i { display: block; height: 100%; width: 0; transition: width .9s var(--ease); }
+.hold .t.full > i { background: linear-gradient(90deg, var(--violet), var(--cyan)); }
+.hold .t.part > i { background: linear-gradient(90deg, var(--green), var(--cyan)); }
+.hold .t.hot > i { background: linear-gradient(90deg, var(--amber), var(--rose)); }
+.hold .vl { color: var(--ink-3); text-align: right; font-size: 10.5px; }
+
+/* 샤드 카드 */
+.shards { display: grid; grid-template-columns: repeat(auto-fit, minmax(112px, 1fr)); gap: 8px; }
+.shard {
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: var(--panel-2); padding: 10px;
+  font-family: var(--mono); font-size: 11px; color: var(--ink-2);
+  text-align: center; transition: all .5s var(--ease);
+}
+.shard small { display: block; font-size: 9.5px; color: var(--ink-3); margin-top: 3px; }
+.shard .load { margin-top: 8px; height: 6px; border-radius: 999px; background: rgba(255,255,255,.06); overflow: hidden; }
+.shard .load > i { display: block; height: 100%; width: 0; background: var(--green); transition: width .8s var(--ease); }
+.shard.hot { border-color: rgba(251,113,133,.6); color: var(--rose); }
+.shard.hot .load > i { background: var(--rose); }
+.shard.warm { border-color: rgba(251,191,36,.5); color: var(--amber); }
+.shard.warm .load > i { background: var(--amber); }
+.shard.cool { border-color: rgba(69,217,154,.4); color: var(--green); }
+.shard.moved { border-style: dashed; border-color: rgba(167,139,250,.55); color: var(--violet); }
+
+/* 지연 게이지 */
+.laggauge { display: flex; align-items: baseline; gap: 8px; font-family: var(--mono); }
+.laggauge .v { font-size: clamp(22px, 5vw, 32px); font-weight: 700; font-variant-numeric: tabular-nums; transition: color .4s; }
+.laggauge .v.ok { color: var(--green); }
+.laggauge .v.warn { color: var(--amber); }
+.laggauge .v.bad { color: var(--rose); }
+.laggauge .u { font-size: 12px; color: var(--ink-3); }
+
+/* 화면에 보이는 값 */
+.screen {
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+  background: #080a0f; padding: 12px 14px;
+  font-size: 13px; color: var(--ink-2);
+  transition: all .5s var(--ease);
+}
+.screen b { font-family: var(--mono); }
+.screen.stale { border-color: rgba(251,113,133,.5); }
+.screen.stale b { color: var(--rose); }
+.screen.fresh { border-color: rgba(69,217,154,.45); }
+.screen.fresh b { color: var(--green); }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#s1">본문으로 건너뛰기</a>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="home" href="./index.html">visualize<span>/</span>backend</a>
+    <nav aria-label="주제 바로가기">
+      <a href="./transaction.html">트랜잭션</a>
+      <a href="./db-index.html">인덱스</a>
+      <a href="./proxy.html">프록시</a>
+      <a href="./idempotency.html">멱등성</a>
+      <a href="./deployment.html">배포</a>
+      <a href="./scaling.html">스케일</a>
+      <a href="./container.html">컨테이너</a>
+      <a href="./vpc.html">VPC</a>
+      <a href="./dbscale.html" aria-current="page">DB 확장</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero wrap">
+    <p class="eyebrow">09 · Read Replica / Sharding</p>
+    <h1><em>DB 확장</em><br>복제는 읽기를, 샤딩은 쓰기를 확장한다</h1>
+    <p>
+      둘을 "DB 확장 방법"으로 뭉치면 답이 흐려집니다.
+      <b>Read Replica는 같은 데이터를 복사</b>해서 읽기를 나누고,
+      <b>샤딩은 데이터를 쪼개</b>서 쓰기와 용량까지 나눕니다.
+      확장하는 <b>축이 다릅니다.</b> 그리고 샤딩은 마지막 수단입니다.
+    </p>
+    <div class="hero-meta">
+      <span class="chip cyan">Read Replica</span>
+      <span class="chip amber">복제 지연</span>
+      <span class="chip violet">샤드 키</span>
+      <span class="chip rose">크로스 샤드</span>
+      <span class="chip">7장면</span>
+    </div>
+  </section>
+
+  <nav class="scene-nav" aria-label="장면 목차">
+    <div class="wrap">
+      <a href="#s1">01 축이 다르다</a>
+      <a href="#s2">02 복제 지연</a>
+      <a href="#s3">03 방금 쓴 값</a>
+      <a href="#s4">04 읽기 라우팅</a>
+      <a href="#s5">05 샤드 키</a>
+      <a href="#s6">06 잃는 것</a>
+      <a href="#s7">07 순서</a>
+      <a href="#s8">비교표</a>
+      <a href="#s9">정리</a>
+    </div>
+  </nav>
+
+  <div class="wrap scenes">
+
+    <!-- ============ 01 축이 다르다 ============ -->
+    <section class="scene" id="s1" data-scene="axis" data-steps="5" data-speed="2000">
+      <header class="scene-head">
+        <span class="scene-num">01</span>
+        <h2>같은 데이터를 <em>복사</em>하는가, 데이터를 <em>쪼개</em>는가</h2>
+        <p class="scene-lead">
+          Read Replica는 모든 노드가 <b>전체 데이터</b>를 갖습니다. 그래서 읽기만 늘어납니다.
+          샤딩은 노드마다 <b>일부 데이터</b>만 갖습니다. 그래서 쓰기와 용량이 함께 늘어납니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <!-- Read Replica -->
+        <div>
+          <p style="margin:0 0 10px"><span class="lbl cyan">Read Replica — 같은 데이터를 복사</span></p>
+          <div class="row-flex" style="gap:8px;align-items:stretch">
+            <div class="col-flex" style="gap:5px;align-self:center">
+              <span class="lbl rose">쓰기 100%</span>
+              <span class="lbl cyan" data-from="2">읽기 분산</span>
+            </div>
+            <div class="arrow rose" style="max-width:40px;align-self:center"><span class="pulse" style="background:var(--rose);box-shadow:0 0 12px 2px rgba(251,113,133,.6)"></span></div>
+            <div class="node violet" style="align-self:center;min-width:104px">Primary<small>전체 데이터</small></div>
+            <div class="arrow violet" style="max-width:40px;align-self:center;background:linear-gradient(90deg,rgba(167,139,250,.2),var(--violet))" data-from="2"></div>
+            <div class="col-flex" style="gap:5px">
+              <div class="node cyan" style="min-width:120px;padding:7px 10px" data-from="2">Replica 1<small>전체 데이터</small></div>
+              <div class="node cyan" style="min-width:120px;padding:7px 10px" data-from="2">Replica 2<small>전체 데이터</small></div>
+              <div class="node cyan" style="min-width:120px;padding:7px 10px" data-from="2">Replica 3<small>전체 데이터</small></div>
+            </div>
+          </div>
+          <p class="row-flex" style="margin:10px 0 0;gap:6px">
+            <span class="lbl rose" data-from="3">쓰기는 여전히 Primary 한 대가 전부 받는다</span>
+            <span class="lbl amber" data-from="3">데이터가 노드 수만큼 중복 저장된다</span>
+          </p>
+        </div>
+
+        <!-- 샤딩 -->
+        <div style="margin-top:22px" data-from="4">
+          <p style="margin:0 0 10px"><span class="lbl green">샤딩 — 데이터를 쪼갠다</span></p>
+          <div class="row-flex" style="gap:8px;align-items:center;margin-bottom:10px">
+            <span class="lbl violet">쓰기 + 읽기</span>
+            <div class="arrow green" style="max-width:40px"><span class="pulse" style="background:var(--green);box-shadow:0 0 12px 2px rgba(69,217,154,.6)"></span></div>
+            <div class="node green" style="min-width:150px">라우팅 계층<small>샤드 키 = user_id</small></div>
+          </div>
+          <div class="shards">
+            <div class="shard cool">Shard 0<small>user 0 – 249</small><span class="load"><i style="width:25%"></i></span></div>
+            <div class="shard cool">Shard 1<small>user 250 – 499</small><span class="load"><i style="width:25%"></i></span></div>
+            <div class="shard cool">Shard 2<small>user 500 – 749</small><span class="load"><i style="width:25%"></i></span></div>
+            <div class="shard cool">Shard 3<small>user 750 – 999</small><span class="load"><i style="width:25%"></i></span></div>
+          </div>
+          <p class="row-flex" style="margin:10px 0 0;gap:6px">
+            <span class="lbl green" data-from="5">쓰기가 4개로 나뉜다</span>
+            <span class="lbl green" data-from="5">저장 용량도 4배</span>
+            <span class="lbl rose" data-from="5">대신 조인·트랜잭션·집계가 어려워진다</span>
+          </p>
+        </div>
+
+        <div style="margin-top:20px" data-from="3">
+          <div class="holds">
+            <div class="hold"><span class="nm">Primary</span><span class="t full"><i id="h-pri"></i></span><span class="vl">전체</span></div>
+            <div class="hold"><span class="nm">Replica 1</span><span class="t full"><i id="h-rep"></i></span><span class="vl">전체 (사본)</span></div>
+            <div class="hold"><span class="nm">Shard 0</span><span class="t part"><i id="h-sh"></i></span><span class="vl">1/4</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>DB 한 대가 쓰기와 읽기를 모두 받고 있습니다. 조회가 늘어 버티기 어려워졌습니다.</p>
+        <p data-cap="2"><span class="k">02</span><b>Read Replica</b>를 붙입니다. Primary의 데이터를 복제해서 <b>읽기를 여러 노드로 분산</b>합니다. 앱 변경은 "조회는 Replica로" 정도라 작습니다.</p>
+        <p data-cap="3"><span class="k">03</span>그런데 <b>쓰기는 여전히 Primary 한 대</b>가 전부 받습니다. 그리고 데이터는 노드마다 <b>전체가 중복 저장</b>됩니다. 저장 용량 문제는 전혀 해결되지 않았습니다.</p>
+        <p data-cap="4"><span class="k">04</span><b>샤딩</b>은 접근이 다릅니다. 샤드 키를 정하고 <b>데이터 자체를 나눠</b> 담습니다.</p>
+        <p data-cap="5"><span class="k">05</span>그러면 <b>쓰기도 용량도 노드 수만큼</b> 늘어납니다. 대신 <b>여러 샤드에 걸친 조인·트랜잭션·집계가 어려워집니다.</b> 대가가 큽니다.</p>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>"Read Replica를 늘리면 쓰기도 빨라지나요?" — 아닙니다.</b></p>
+          <p>
+            오히려 <b>약간 느려질 수 있습니다.</b> Primary는 자기 쓰기 작업 외에 binlog를 만들고
+            Replica들에게 전송하는 부담을 추가로 집니다.
+            준동기 복제까지 쓰면 <b>최소 1개 Replica가 받았음을 확인한 뒤 커밋</b>하므로
+            쓰기 지연이 명확히 늘어납니다.
+            "읽기 확장 전용"이라는 걸 정확히 말하는 게 이 질문의 절반입니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 02 복제 지연 ============ -->
+    <section class="scene" id="s2" data-scene="lag" data-steps="5" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">02</span>
+        <h2>복제는 <em>비동기</em>다 — 그래서 지연이 생긴다</h2>
+        <p class="scene-lead">
+          Primary는 <b>binlog에 쓰고 바로 클라이언트에 성공을 응답합니다.</b>
+          Replica가 그걸 받아 적용하는 건 그 다음 일입니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="flowv">
+          <div class="fstep" id="lg1" data-from="1"><span class="no">1</span><span>Primary가 트랜잭션을 커밋하고 <b>binlog</b>에 기록한다</span></div>
+          <div class="fstep" id="lg2" data-from="1"><span class="no">2</span><span><b>여기서 이미 클라이언트에 "성공"을 응답한다</b> — 비동기 복제의 핵심</span></div>
+          <div class="fstep" id="lg3" data-from="2"><span class="no">3</span><span>Replica의 <b>I/O 스레드</b>가 binlog를 받아 relay log에 쓴다</span></div>
+          <div class="fstep" id="lg4" data-from="3"><span class="no">4</span><span>Replica의 <b>SQL 스레드</b>가 relay log를 실행한다 ← <b>여기가 병목</b></span></div>
+          <div class="fstep" id="lg5" data-from="4"><span class="no">5</span><span>이제야 Replica에서 조회 가능. 그 사이가 <b>복제 지연(replication lag)</b></span></div>
+        </div>
+
+        <div class="row-flex between" style="margin-top:18px">
+          <div class="laggauge">
+            <span class="v ok" id="lagv">0.0</span><span class="u">초 · Seconds_Behind_Source</span>
+          </div>
+          <span class="lbl" id="lagnote">평시</span>
+        </div>
+        <div class="bar" style="margin-top:10px" id="lagbarwrap"><span id="lagbar"></span></div>
+
+        <div style="margin-top:18px" data-from="5">
+          <div class="split">
+            <div class="pane bad">
+              <h4>지연이 폭발하는 원인</h4>
+              <ul style="margin:0;padding-left:18px;font-size:13px;color:var(--ink-2);line-height:1.85">
+                <li><b>대량 UPDATE/DELETE 한 방</b> — <code>UPDATE … WHERE</code>로 100만 행</li>
+                <li>긴 트랜잭션, 큰 DDL</li>
+                <li>Replica 사양이 Primary보다 낮음</li>
+                <li>MySQL 5.x의 <b>단일 스레드 적용</b> (8.0은 병렬 워커)</li>
+                <li>Replica에서 무거운 분석 쿼리를 돌려 SQL 스레드가 밀림</li>
+              </ul>
+            </div>
+            <div class="pane good">
+              <h4>확인과 완화</h4>
+              <pre class="code" style="margin:0"><span class="c">-- 지연 확인 (MySQL 8.0)</span>
+<span class="k">SHOW</span> REPLICA STATUS\G
+<span class="c">-- Seconds_Behind_Source: 12</span>
+
+<span class="c">-- 병렬 적용 활성화</span>
+replica_parallel_workers = <span class="n">8</span>
+replica_parallel_type   = LOGICAL_CLOCK</pre>
+              <p style="margin:10px 0 0;font-size:13px;color:var(--ink-2)">
+                대량 변경은 <b>배치로 쪼개서</b> 실행합니다.
+                한 번에 100만 행 대신 1만 행씩 100번. 이게 실무 습관입니다.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>Primary가 커밋하고 binlog에 씁니다. <b>그리고 바로 클라이언트에 성공을 응답합니다.</b> Replica를 기다리지 않습니다.</p>
+        <p data-cap="2"><span class="k">02</span>Replica의 I/O 스레드가 binlog를 받아 relay log에 씁니다. 여기는 보통 빠릅니다.</p>
+        <p data-cap="3"><span class="k">03</span>SQL 스레드가 relay log를 <b>실제로 실행</b>합니다. <b>여기가 병목입니다.</b> 큰 UPDATE 한 방이 오면 이 단계에서 몇 분씩 밀립니다.</p>
+        <p data-cap="4"><span class="k">04</span>지연이 커지는 동안 <b>Replica는 과거를 보여줍니다.</b> 앱은 아무 에러도 받지 않습니다. 그래서 알아채기 어렵습니다.</p>
+        <p data-cap="5"><span class="k">05</span>원인은 대체로 <b>대량 변경 한 방</b>입니다. 그래서 대량 작업은 배치로 쪼개고, <code>Seconds_Behind_Source</code>를 모니터링에 걸어둡니다.</p>
+      </div>
+    </section>
+
+    <!-- ============ 03 read-after-write ============ -->
+    <section class="scene" id="s3" data-scene="raw" data-steps="6" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">03</span>
+        <h2>가장 자주 겪는 사고 — <em>방금 저장한 값이 안 보인다</em></h2>
+        <p class="scene-lead">
+          Read Replica의 존재는 누구나 압니다.
+          <b>복제 지연을 어떻게 다루는지</b>를 말할 수 있으면 이 질문은 통과입니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="lanes">
+          <div class="lane">
+            <span class="who">사용자</span>
+            <div class="track">
+              <span class="ev cyan" style="left:14%" data-from="1">이름을 "홍길동"으로 수정</span>
+              <span class="ev rose" style="left:58%" data-from="4">"저장이 안 됐나요?"</span>
+            </div>
+          </div>
+          <div class="lane">
+            <span class="who">Primary</span>
+            <div class="track">
+              <span class="ev green" style="left:16%" data-from="2">UPDATE 커밋 · 200 OK</span>
+            </div>
+          </div>
+          <div class="lane">
+            <span class="who">Replica</span>
+            <div class="track">
+              <span class="ev amber" style="left:44%" data-from="3">아직 예전 값</span>
+              <span class="ev green" style="left:78%" data-from="5">복제 완료</span>
+            </div>
+          </div>
+        </div>
+        <div class="timeaxis"><span style="left:10%">t+0ms</span><span style="left:40%">t+120ms 리다이렉트</span><span style="left:74%">t+800ms</span></div>
+
+        <div style="margin-top:18px">
+          <div class="screen" id="screen">
+            프로필 페이지 — 이름: <b id="screenname">김철수</b>
+          </div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px;gap:8px">
+          <span class="lbl cyan" data-at="1,2">쓰기는 Primary로 갔고 성공했다</span>
+          <span class="lbl rose" data-at="3,4">리다이렉트된 조회는 Replica로 갔다 → 예전 값</span>
+          <span class="lbl amber" data-at="5">잠시 뒤 복제가 끝나면 정상으로 보인다</span>
+          <span class="lbl green" data-at="6">대응은 네 가지</span>
+        </div>
+
+        <div style="margin-top:16px" data-from="6">
+          <table class="tbl">
+            <thead><tr><th>대응</th><th>설명</th></tr></thead>
+            <tbody>
+              <tr class="hit"><td><b>응답에 결과를 담는다</b></td><td>쓰기 API가 갱신된 객체를 반환해서 재조회를 없앤다. <b>가장 깔끔하고 근본적</b></td></tr>
+              <tr><td>중요 읽기는 Primary로</td><td>결제·잔액·방금 쓴 데이터 조회는 Primary에서. 가장 흔한 해법</td></tr>
+              <tr><td>쓰기 후 N초 Primary 고정</td><td>세션에 쓰기 시각을 기록하고 그 사용자만 일정 시간 Primary로 (sticky read)</td></tr>
+              <tr><td>GTID 기반 대기</td><td><code>WAIT_FOR_EXECUTED_GTID_SET</code>으로 해당 트랜잭션이 적용될 때까지 대기</td></tr>
+              <tr class="locked"><td>준동기 복제</td><td>최소 1개 Replica 수신 확인 후 커밋. 지연은 줄지만 <b>쓰기 성능이 떨어진다</b></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>사용자가 프로필 이름을 "홍길동"으로 수정합니다.</p>
+        <p data-cap="2"><span class="k">02</span>쓰기는 Primary로 가서 <b>정상 커밋되고 200을 응답</b>합니다. 여기까지 아무 문제 없습니다.</p>
+        <p data-cap="3"><span class="k">03</span>앱이 프로필 페이지로 리다이렉트합니다. 이 <b>조회는 Replica</b>로 갑니다. 그런데 복제가 아직 안 끝났습니다.</p>
+        <p data-cap="4"><span class="k">04</span>사용자는 <b>예전 이름</b>을 봅니다. 앱은 에러를 안 냈고 로그도 깨끗합니다. 문의만 들어옵니다.</p>
+        <p data-cap="5"><span class="k">05</span>몇백 밀리초 뒤 복제가 끝나면 정상으로 보입니다. <b>재현이 어려운 버그</b>가 되는 이유입니다.</p>
+        <p data-cap="6"><span class="k">06</span>대응은 네 가지입니다. 실무에서 가장 깔끔한 건 <b>쓰기 응답에 갱신된 객체를 담아서 재조회 자체를 없애는 것</b>입니다.</p>
+      </div>
+
+      <div class="warn">
+        <p><b><code>SELECT</code>라고 무조건 Replica로 보내면 안 됩니다.</b></p>
+        <p style="margin-top:6px">
+          <b>트랜잭션 안의 <code>SELECT</code>는 Primary로 가야 합니다.</b>
+          같은 트랜잭션에서 쓴 값을 읽어야 하고, <code>SELECT … FOR UPDATE</code>는 락이 필요하기 때문입니다.
+          쿼리 문자열만 보고 자동 분기하는 프록시 설정에서 이 사고가 납니다.
+        </p>
+      </div>
+    </section>
+
+    <!-- ============ 04 읽기 라우팅 ============ -->
+    <section class="scene" id="s4" data-scene="route" data-steps="4" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">04</span>
+        <h2>읽기 라우팅을 <em>어디서</em> 하나</h2>
+        <p class="scene-lead">
+          Replica를 붙이는 건 클릭 몇 번인데, <b>"어떤 쿼리를 어디로 보낼지" 결정하는 지점</b>이
+          실제 작업량입니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="flowv">
+          <div class="fstep" data-from="1">
+            <span class="no">A</span>
+            <span><b>애플리케이션에서</b> — 커넥션을 writer/reader 두 개 만들고 코드에서 고른다.
+            가장 명시적이고 제어가 정확하다. <b>트랜잭션 안은 무조건 writer</b>로 강제할 수 있다</span>
+          </div>
+          <div class="fstep" data-from="2">
+            <span class="no">B</span>
+            <span><b>Aurora Reader Endpoint</b> — 여러 Replica로 자동 분산해주는 엔드포인트.
+            앱은 주소 두 개만 알면 된다</span>
+          </div>
+          <div class="fstep" data-from="3">
+            <span class="no">C</span>
+            <span><b>RDS Proxy / ProxySQL</b> — 프록시가 쿼리를 보고 자동 분기하고 커넥션도 풀링한다.
+            앱 변경이 가장 적다. 대신 <b>자동 분기의 오판</b>을 주의해야 한다</span>
+          </div>
+          <div class="fstep" data-from="4">
+            <span class="no">D</span>
+            <span><b>ORM / 프레임워크 설정</b> — 편하지만 트랜잭션 경계 처리를 반드시 확인한다</span>
+          </div>
+        </div>
+
+        <div style="margin-top:18px" data-from="4">
+          <pre class="code"><span class="c">// 애플리케이션 라우팅 — 의도가 코드에 남는다</span>
+<span class="k">type</span> DB <span class="k">struct</span> {
+    W *sql.DB   <span class="c">// writer  : Primary</span>
+    R *sql.DB   <span class="c">// reader  : Replica (또는 Reader Endpoint)</span>
+}
+
+<span class="c">// 목록 조회 — 약간 과거여도 괜찮다</span>
+rows, _ := db.R.Query(<span class="s">"SELECT id, name FROM users LIMIT 20"</span>)
+
+<span class="c">// 결제 직전 잔액 확인 — 반드시 최신이어야 한다</span>
+<span class="k">var</span> balance <span class="k">int64</span>
+db.W.QueryRow(<span class="s">"SELECT balance FROM accounts WHERE id = ?"</span>, id).Scan(&amp;balance)
+
+<span class="c">// 트랜잭션은 항상 writer</span>
+tx, _ := db.W.Begin()</pre>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px;gap:8px">
+          <span class="lbl green" data-at="4">판단 기준: 이 조회가 <b>몇 초 과거여도 괜찮은가</b></span>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>가장 명시적인 방법은 <b>앱에서 커넥션을 두 개 두고 직접 고르는 것</b>입니다. 의도가 코드에 남습니다.</p>
+        <p data-cap="2"><span class="k">02</span>Aurora를 쓰면 <b>Reader Endpoint</b>가 Replica 분산을 대신해줍니다.</p>
+        <p data-cap="3"><span class="k">03</span><b>RDS Proxy나 ProxySQL</b>은 프록시가 자동 분기합니다. 앱 변경이 적은 대신 <b>오판 위험</b>이 있습니다.</p>
+        <p data-cap="4"><span class="k">04</span>어느 방법이든 판단 기준은 하나입니다 — <b>"이 조회가 몇 초 과거여도 괜찮은가."</b> 목록은 괜찮고 잔액은 안 됩니다.</p>
+      </div>
+    </section>
+
+    <!-- ============ 05 샤드 키 ============ -->
+    <section class="scene" id="s5" data-scene="shardkey" data-steps="6" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">05</span>
+        <h2>샤딩은 <em>샤드 키 선택이 전부</em>다</h2>
+        <p class="scene-lead">
+          잘못 정하면 <b>핫스팟</b>이 생기고, 나중에 바꾸려면 <b>전체 데이터를 재배치</b>해야 합니다.
+          되돌리기가 가장 어려운 결정입니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <p style="margin:0 0 10px"><span class="lbl amber" id="skmode">① 레인지 샤딩 — user_id 구간으로 나눈다</span></p>
+        <div class="shards" id="skshards">
+          <div class="shard cool">Shard 0<small id="sk0">user 0 – 249</small><span class="load"><i></i></span></div>
+          <div class="shard cool">Shard 1<small id="sk1">user 250 – 499</small><span class="load"><i></i></span></div>
+          <div class="shard cool">Shard 2<small id="sk2">user 500 – 749</small><span class="load"><i></i></span></div>
+          <div class="shard cool">Shard 3<small id="sk3">user 750 – 999</small><span class="load"><i></i></span></div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px;gap:8px">
+          <span class="lbl green" data-at="1">초기에는 고르게 나뉜다</span>
+          <span class="lbl rose" data-at="2">신규 가입자는 전부 마지막 샤드로 → <b>핫스팟</b></span>
+          <span class="lbl cyan" data-at="3">해시 샤딩으로 바꾸면 균등해진다</span>
+          <span class="lbl rose" data-at="4">그런데 노드를 4 → 5로 늘리면 <b>거의 전부 재배치</b></span>
+          <span class="lbl violet" data-at="5">해법: 논리 샤드를 물리 노드보다 많이 만든다</span>
+          <span class="lbl green" data-at="6">이제 노드 추가는 <b>논리 샤드 이동</b>으로 끝난다</span>
+        </div>
+
+        <div style="margin-top:18px" data-from="5">
+          <div class="pane">
+            <h4>논리 샤드 (실무 정석)</h4>
+            <pre class="code" style="margin:0 0 10px">logical_shard = hash(user_id) % <span class="n">1024</span>     <span class="c">// 논리 샤드 1024개 — 절대 안 바꾼다</span>
+physical_node = shard_map[logical_shard]      <span class="c">// 매핑만 바꾼다</span>
+
+<span class="c">// 노드 4대 → 8대로 늘릴 때</span>
+<span class="c">// 논리 샤드 256개씩 → 128개씩. 해시 재계산이 필요 없다</span></pre>
+            <p style="margin:0;font-size:13px;color:var(--ink-2)">
+              논리 샤드 1024개를 만들고 물리 노드 4대에 256개씩 배치합니다.
+              노드를 늘릴 때 <b style="color:var(--violet)">논리 샤드 단위로만 옮기면 되므로 해시를 다시 계산하지 않습니다.</b>
+              이걸 말하면 확실히 눈에 띕니다.
+            </p>
+          </div>
+        </div>
+
+        <div style="margin-top:16px" data-from="6">
+          <table class="tbl">
+            <thead><tr><th>방식</th><th>설명</th><th>문제</th></tr></thead>
+            <tbody>
+              <tr><td>레인지</td><td><code>user_id 0~999</code> → 샤드 0</td><td><b>신규가 마지막 샤드로 쏠린다 (핫스팟)</b></td></tr>
+              <tr><td>해시</td><td><code>hash(user_id) % N</code></td><td>균등하지만 <b>N이 바뀌면 거의 전부 재배치</b></td></tr>
+              <tr class="hit"><td>일관된 해싱 / 논리 샤드</td><td>해시 링 또는 고정 논리 샤드 → 노드 매핑</td><td>이동량이 적다. <b>실무 정석</b></td></tr>
+              <tr><td>디렉터리</td><td>매핑 테이블을 따로 관리</td><td>유연하지만 <b>매핑 테이블이 SPOF/병목</b></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>레인지 샤딩입니다. <code>user_id</code> 구간으로 4등분했습니다. 초기에는 고르게 보입니다.</p>
+        <p data-cap="2"><span class="k">02</span>서비스가 자라면서 신규 가입자가 계속 들어옵니다. <b>ID가 큰 사용자는 전부 마지막 샤드</b>로 갑니다. 그리고 활동량이 많은 최근 사용자가 거기 몰려 있습니다 — <b>핫스팟</b>입니다.</p>
+        <p data-cap="3"><span class="k">03</span>해시 샤딩으로 바꾸면 균등하게 흩어집니다. 문제가 해결된 것 같습니다.</p>
+        <p data-cap="4"><span class="k">04</span>그런데 노드를 4대에서 5대로 늘리면 <code>% 4</code>가 <code>% 5</code>가 되어 <b>거의 모든 데이터의 위치가 바뀝니다.</b> 리샤딩 지옥입니다.</p>
+        <p data-cap="5"><span class="k">05</span>그래서 <b>논리 샤드를 물리 노드보다 훨씬 많이</b> 만듭니다. 해시는 논리 샤드 번호를 정하고, 논리 샤드 → 노드 매핑만 따로 관리합니다.</p>
+        <p data-cap="6"><span class="k">06</span>이제 노드 추가는 <b>논리 샤드 몇 개를 옮기는 작업</b>이 됩니다. 해시 재계산이 없습니다. 방식별 트레이드오프를 정리하면 표와 같습니다.</p>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>샤드 키는 "쿼리 패턴"으로 정합니다.</b></p>
+          <p>
+            대부분의 조회가 <code>WHERE user_id = ?</code>로 들어온다면 <code>user_id</code>가 샤드 키여야 합니다.
+            그러면 대부분의 쿼리가 <b>단일 샤드에서 끝납니다.</b>
+            반대로 샤드 키가 아닌 조건으로 조회하면 <b>모든 샤드에 질의(scatter-gather)</b>해야 해서
+            샤딩이 오히려 느려집니다.
+            <b>"샤드 키가 아닌 조건으로 조회하면 어떻게 되나요?"</b>는 이 주제의 핵심 꼬리질문입니다.
+            대안은 보조 인덱스 테이블을 따로 두거나, 검색은 Elasticsearch로 분리하는 것입니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 06 잃는 것 ============ -->
+    <section class="scene" id="s6" data-scene="lose" data-steps="5" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">06</span>
+        <h2>샤딩하면 <em>잃는 것</em>들 — 이걸 말할 수 있어야 한다</h2>
+        <p class="scene-lead">
+          샤딩을 쉽게 말하는 게 가장 큰 감점 요인입니다.
+          <b>DB가 대신 해주던 일들이 전부 애플리케이션 책임으로 넘어옵니다.</b>
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="split">
+          <div class="pane good">
+            <h4>단일 DB에서는 당연했던 것</h4>
+            <pre class="code" style="margin:0"><span class="c">-- 조인</span>
+<span class="k">SELECT</span> u.name, o.amount
+  <span class="k">FROM</span> users u <span class="k">JOIN</span> orders o <span class="k">ON</span> o.user_id = u.id
+ <span class="k">WHERE</span> o.created_at &gt;= <span class="s">'2026-01-01'</span>;
+
+<span class="c">-- 트랜잭션</span>
+<span class="k">BEGIN</span>;
+  <span class="k">UPDATE</span> accounts <span class="k">SET</span> balance = balance - <span class="n">1000</span> <span class="k">WHERE</span> id = <span class="n">1</span>;
+  <span class="k">UPDATE</span> accounts <span class="k">SET</span> balance = balance + <span class="n">1000</span> <span class="k">WHERE</span> id = <span class="n">2</span>;
+<span class="k">COMMIT</span>;
+
+<span class="c">-- 유니크 제약 / 집계 / 페이지네이션</span>
+<span class="k">UNIQUE</span> KEY uk_email (email)
+<span class="k">SELECT</span> <span class="k">COUNT</span>(*) <span class="k">FROM</span> orders;
+<span class="k">SELECT</span> * <span class="k">FROM</span> orders <span class="k">ORDER BY</span> id <span class="k">DESC</span> <span class="k">LIMIT</span> <span class="n">20</span>;</pre>
+          </div>
+          <div class="pane bad">
+            <h4>샤딩 후</h4>
+            <div class="flowv">
+              <div class="fstep fail" data-from="1"><span class="no">✕</span><span><b>크로스 샤드 조인</b> — 불가능. 앱에서 두 번 조회해 합치거나, 비정규화해서 같은 샤드에 둔다</span></div>
+              <div class="fstep fail" data-from="2"><span class="no">✕</span><span><b>크로스 샤드 트랜잭션</b> — ACID가 깨진다. Saga 패턴이나 <b>결과적 일관성</b>을 받아들인다</span></div>
+              <div class="fstep fail" data-from="3"><span class="no">✕</span><span><b>전역 유니크 제약</b> — DB가 이메일 유니크를 보장하지 못한다. 별도 유니크 인덱스 테이블 필요</span></div>
+              <div class="fstep fail" data-from="3"><span class="no">✕</span><span><b>AUTO_INCREMENT</b> — 샤드마다 1부터 시작한다. <b>Snowflake / UUID v7 / ULID</b> 필요</span></div>
+              <div class="fstep fail" data-from="4"><span class="no">✕</span><span><b>전체 집계·정렬</b> — 모든 샤드에서 가져와 앱에서 병합해야 한다</span></div>
+              <div class="fstep fail" data-from="4"><span class="no">✕</span><span><b>페이지네이션</b> — 특히 어렵다. 커서 기반으로 바꾸고 샤드별 커서를 관리</span></div>
+              <div class="fstep fail" data-from="5"><span class="no">✕</span><span><b>스키마 변경 · 백업 · 모니터링</b> — 샤드 수만큼 곱해진다</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:18px" data-from="5">
+          <div class="warn" style="margin-top:0">
+            <p><b>장애 양상도 달라집니다.</b></p>
+            <p style="margin-top:6px">
+              Read Replica는 <b>Replica 하나가 죽어도 서비스가 유지</b>됩니다(읽기를 다른 곳으로 보내면 됩니다).
+              샤딩은 <b>샤드 하나가 죽으면 그 범위의 사용자만 완전히 장애</b>입니다.
+              "전체 다운은 아니지만 일부는 아무것도 못 한다" — 대응 방식이 다릅니다.
+              그래서 실무에서는 <b>샤드마다 다시 Replica를 붙입니다.</b> 노드 수가 곱셈으로 늘어납니다.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>왼쪽은 단일 DB에서 아무 생각 없이 쓰던 쿼리들입니다. 오른쪽은 샤딩 후 각각 어떻게 되는지입니다.</p>
+        <p data-cap="2"><span class="k">02</span><b>크로스 샤드 조인과 트랜잭션</b>이 먼저 깨집니다. 계좌 이체 두 줄이 분산 트랜잭션 문제가 됩니다.</p>
+        <p data-cap="3"><span class="k">03</span><b>유니크 제약과 AUTO_INCREMENT</b>도 못 씁니다. PK 생성기를 따로 만들어야 합니다.</p>
+        <p data-cap="4"><span class="k">04</span><b>집계와 페이지네이션</b>이 애플리케이션 책임이 됩니다. <code>ORDER BY … LIMIT 20</code> 하나가 모든 샤드 조회 + 병합이 됩니다.</p>
+        <p data-cap="5"><span class="k">05</span>운영 부담도 샤드 수만큼 곱해집니다. <b>그래서 샤딩은 마지막 수단입니다.</b> 다음 장면에서 순서를 봅니다.</p>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>파티셔닝과 샤딩의 차이도 자주 묻습니다.</b></p>
+          <p>
+            <b>파티셔닝</b>은 <b>하나의 DB 서버 안</b>에서 큰 테이블을 물리적으로 나누는 것입니다.
+            목적은 관리 편의(오래된 파티션 일괄 삭제)와 파티션 프루닝이고, <b>서버 자원은 그대로</b>입니다.
+            <b>샤딩</b>은 <b>여러 DB 서버</b>로 분산해서 자원 자체를 늘리는 것입니다.
+            한 줄로 정리하면 <b>"샤딩은 수평 분할을 여러 서버로 확장한 것"</b>입니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 07 순서 ============ -->
+    <section class="scene" id="s7" data-scene="order" data-steps="5" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">07</span>
+        <h2>순서를 말할 수 있으면 <em>판단력</em>으로 읽힌다</h2>
+        <p class="scene-lead">
+          "DB가 느립니다"에 바로 샤딩을 꺼내면 감점입니다.
+          <b>싼 것부터, 되돌릴 수 있는 것부터</b>입니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="flowv">
+          <div class="fstep" id="o1" data-from="1"><span class="no">01</span><span><b>인덱스 · 쿼리 튜닝</b> — 대부분 여기서 끝난다. 2.3초 → 40ms가 흔하다 (<a href="./db-index.html">인덱스 편</a>)</span></div>
+          <div class="fstep" id="o2" data-from="1"><span class="no">02</span><span><b>N+1 제거, 커넥션 풀 조정</b></span></div>
+          <div class="fstep" id="o3" data-from="2"><span class="no">03</span><span><b>캐시</b> — Redis, CDN. 읽기 부하는 <b>Replica보다 캐시가 먼저</b>인 경우가 많다</span></div>
+          <div class="fstep" id="o4" data-from="2"><span class="no">04</span><span><b>Scale-up</b> — 인스턴스 사양 상향. 시간을 버는 카드 (<a href="./scaling.html">스케일 편</a>)</span></div>
+          <div class="fstep" id="o5" data-from="3"><span class="no">05</span><span><b>Read Replica</b> — 읽기 분리. 복제 지연을 다룰 준비가 필요하다</span></div>
+          <div class="fstep" id="o6" data-from="3"><span class="no">06</span><span><b>아키텍처 변경</b> — 비동기화(SQS), CQRS, 검색은 Elasticsearch로 분리</span></div>
+          <div class="fstep" id="o7" data-from="4"><span class="no">07</span><span><b>파티셔닝 · 오래된 데이터 아카이빙</b> — 테이블을 물리적으로 줄인다</span></div>
+          <div class="fstep" id="o8" data-from="5"><span class="no">08</span><span><b>샤딩</b> — 마지막. 되돌리기가 가장 어렵다</span></div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px;gap:8px">
+          <span class="lbl green" data-at="1,2">여기까지가 가장 싸고 효과가 크다</span>
+          <span class="lbl cyan" data-at="3">대부분의 서비스는 여기서 충분하다</span>
+          <span class="lbl amber" data-at="4">여기부터는 설계 변경이다</span>
+          <span class="lbl rose" data-at="5">샤딩은 데이터 증가율과 쓰기 부하를 근거로 판단할 문제</span>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>먼저 <b>인덱스와 쿼리</b>를 봅니다. 대부분 여기서 끝나고, 가장 쌉니다. 측정 없이 다음 단계로 가지 않습니다.</p>
+        <p data-cap="2"><span class="k">02</span>그다음 <b>캐시와 Scale-up</b>입니다. 읽기 부하라면 Replica보다 캐시가 먼저인 경우가 많습니다 — DB까지 안 가는 게 가장 빠릅니다.</p>
+        <p data-cap="3"><span class="k">03</span><b>Read Replica</b>로 읽기를 분리합니다. <b>대부분의 서비스는 여기서 충분합니다.</b> 대신 복제 지연을 다룰 준비가 필요합니다.</p>
+        <p data-cap="4"><span class="k">04</span>그다음은 설계 변경입니다 — 비동기화, CQRS, 검색 분리, 파티셔닝, 아카이빙.</p>
+        <p data-cap="5"><span class="k">05</span><b>샤딩은 마지막입니다.</b> "저희 규모에서는 5번까지로 대부분 해결된다고 보고, 샤딩은 데이터 증가율과 쓰기 부하를 근거로 마지막에 판단할 문제라고 생각합니다" — 이 톤이 실무 판단력으로 읽힙니다.</p>
+      </div>
+    </section>
+
+    <!-- ============ 비교표 ============ -->
+    <section class="scene" id="s8">
+      <header class="scene-head">
+        <span class="scene-num">비교</span>
+        <h2>한 장으로 보는 차이</h2>
+      </header>
+
+      <table class="tbl">
+        <thead><tr><th></th><th>Read Replica</th><th>샤딩</th></tr></thead>
+        <tbody>
+          <tr class="hit"><td>확장 대상</td><td><b>읽기</b></td><td><b>쓰기 + 읽기 + 저장 용량</b></td></tr>
+          <tr><td>데이터 배치</td><td>모든 노드가 <b>전체 데이터</b></td><td>노드마다 <b>일부 데이터</b></td></tr>
+          <tr><td>앱 변경</td><td>읽기 라우팅만 (작다)</td><td>샤드 키 결정, 라우팅 계층 (크다)</td></tr>
+          <tr><td>도입 난이도</td><td>낮다 (RDS는 클릭 몇 번)</td><td><b>매우 높다</b></td></tr>
+          <tr class="locked"><td>주요 문제</td><td><b>복제 지연</b></td><td>조인·트랜잭션·집계·리샤딩</td></tr>
+          <tr><td>장애 시</td><td>Replica가 죽어도 서비스 유지</td><td><b>샤드가 죽으면 그 범위 사용자만 장애</b></td></tr>
+          <tr><td>데이터 총량</td><td>노드 수만큼 중복 저장</td><td>나눠 저장</td></tr>
+          <tr><td>되돌리기</td><td>쉽다 (Replica 삭제)</td><td><b>매우 어렵다</b></td></tr>
+        </tbody>
+      </table>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">파티셔닝 vs 샤딩</h3>
+      <table class="tbl">
+        <thead><tr><th></th><th>파티셔닝</th><th>샤딩</th></tr></thead>
+        <tbody>
+          <tr><td>범위</td><td><b>하나의 DB 서버 안</b>에서 테이블 분할</td><td><b>여러 DB 서버</b>로 분산</td></tr>
+          <tr><td>목적</td><td>큰 테이블 관리, 파티션 일괄 삭제, 프루닝</td><td>확장성 (쓰기·용량)</td></tr>
+          <tr class="hit"><td>서버 자원</td><td>그대로</td><td>늘어난다</td></tr>
+        </tbody>
+      </table>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">꼬리질문 체크리스트</h3>
+      <ul class="checklist">
+        <li>Read Replica와 샤딩의 차이를 한 줄로? → <b>같은 데이터 복사(읽기) vs 데이터 분할(쓰기)</b></li>
+        <li>Read Replica로 쓰기 부하가 줄어드나? → <b>아니다.</b> 쓰기는 Primary 한 대</li>
+        <li>복제 지연은 왜 생기고 어떻게 대응하나?</li>
+        <li>Read-after-write 문제를 겪으면? → <b>응답에 결과 담기 / 중요 읽기는 Primary</b></li>
+        <li>모든 <code>SELECT</code>를 Replica로 보내도 되나? → <b>트랜잭션 내부는 Primary</b></li>
+        <li>Primary가 죽으면? → 페일오버. Multi-AZ, 승격 + 엔드포인트 전환. <b>그 사이 쓰기 불가</b></li>
+        <li>샤드 키는 어떻게 정하나? 잘못 정하면? → <b>쿼리 패턴 기준. 핫스팟과 scatter-gather</b></li>
+        <li>샤드를 추가하면 무슨 일이 생기나? → 리샤딩. <b>일관된 해싱 / 논리 샤드</b></li>
+        <li>샤딩 후 PK는? → <b>Snowflake, UUID v7, ULID</b></li>
+        <li>파티셔닝과 샤딩의 차이는?</li>
+        <li>샤딩 전에 해볼 수 있는 건? → <b>07 장면의 순서 전체</b></li>
+      </ul>
+    </section>
+
+    <!-- ============ 정리 ============ -->
+    <section class="scene" id="s9">
+      <header class="scene-head">
+        <span class="scene-num">정리</span>
+        <h2>이 7장면을 한 문단으로</h2>
+      </header>
+
+      <div class="stage" style="min-height:auto">
+        <p style="margin:0;font-size:15px;line-height:1.95;color:var(--ink-2)">
+          <b style="color:var(--ink)">확장하는 축이 다릅니다.</b>
+          Read Replica는 <b style="color:var(--cyan)">같은 데이터를 복제</b>해서 읽기를 분산합니다.
+          도입은 쉽지만 <b style="color:var(--amber)">쓰기는 여전히 Primary 한 대</b>가 받고,
+          비동기 복제라서 <b>복제 지연</b>이 생깁니다.
+          그래서 방금 쓴 값이 안 보이는 <b>read-after-write</b> 문제를 다뤄야 하고,
+          가장 깔끔한 해법은 <b>쓰기 응답에 갱신된 객체를 담아 재조회를 없애는 것</b>입니다.
+          트랜잭션 안의 <code>SELECT</code>는 항상 Primary로 보냅니다.
+          샤딩은 <b style="color:var(--green)">데이터를 쪼개</b>서 쓰기와 용량까지 확장하지만,
+          <b style="color:var(--violet)">샤드 키를 정해야 하고</b>(쿼리 패턴 기준, 핫스팟 주의, 논리 샤드 권장)
+          <b style="color:var(--rose)">크로스 샤드 조인·트랜잭션·유니크 제약·집계·페이지네이션을 잃습니다.</b>
+          그래서 순서가 있습니다 — 인덱스·쿼리 → 캐시 → Scale-up → Read Replica →
+          아키텍처 변경 → <b>마지막에 샤딩</b>입니다.
+        </p>
+      </div>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">자주 하는 실수</h3>
+      <ul class="checklist">
+        <li>둘을 "DB 확장 방법"으로 뭉쳐서 말한다 → <b>읽기 확장 vs 쓰기 확장</b>이 핵심 구분</li>
+        <li>Read Replica의 복제 지연을 언급하지 않는다 → 실무에서 가장 자주 부딪히는 문제</li>
+        <li>샤딩을 쉽게 말한다 → <b>잃는 것</b>을 말할 수 있어야 한다</li>
+        <li>순서 없이 바로 샤딩을 답한다 → 판단력이 없어 보인다</li>
+        <li>Replica를 늘리면 쓰기도 빨라진다고 생각한다 → 오히려 Primary 부담이 늘어난다</li>
+        <li>모든 <code>SELECT</code>를 Replica로 보낸다 → <b>트랜잭션 내부와 방금 쓴 데이터</b>는 Primary</li>
+        <li>파티셔닝과 샤딩을 구분하지 못한다</li>
+      </ul>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>원문 노트</b></p>
+          <p>
+            30초 답변과 꼬리질문 체크리스트는 <a href="../infra.md">infra.md</a> 7번에 있습니다.
+            여기까지 오기 전에 해야 하는 <b>인덱스와 쿼리 튜닝</b>은
+            <a href="../index.md">index.md</a> / <a href="./db-index.html">인덱스 편</a>에 있고,
+            <b>트랜잭션과 락</b>은 <a href="./transaction.html">트랜잭션 편</a>에 있습니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="wrap pager">
+    <a href="./vpc.html"><small>← 이전</small>08 VPC</a>
+    <a class="next" href="./index.html"><small>목록 →</small>전체 주제</a>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap row-flex">
+    <span>원문 노트: <a href="../infra.md">infra.md</a></span>
+    <span>기준: MySQL 8.x / InnoDB · AWS RDS / Aurora · RDS Proxy · Redis</span>
+  </div>
+</footer>
+
+<script src="./assets/scene.js"></script>
+<script>
+(function () {
+  function watch(name, fn) {
+    var sc = document.querySelector('[data-scene="' + name + '"]');
+    if (!sc) return;
+    fn(0);
+    new MutationObserver(function () {
+      fn(parseInt(sc.dataset.step || '0', 10));
+    }).observe(sc, { attributes: true, attributeFilter: ['data-step'] });
+  }
+  function w(id, v) { var el = document.getElementById(id); if (el) el.style.width = v; }
+
+  /* 01 보유 데이터량 */
+  watch('axis', function (step) {
+    var on = step >= 3;
+    w('h-pri', on ? '100%' : '0%');
+    w('h-rep', on ? '100%' : '0%');
+    w('h-sh', step >= 4 ? '25%' : '0%');
+  });
+
+  /* 02 복제 지연 게이지 */
+  var LAG = {
+    0: [0, 'ok', '평시'],
+    1: [0, 'ok', '평시'],
+    2: [0.2, 'ok', '정상 — 수십 ms'],
+    3: [0.4, 'warn', 'SQL 스레드가 밀리기 시작'],
+    4: [47.0, 'bad', '대량 UPDATE 한 방 → 47초 지연'],
+    5: [3.0, 'warn', '배치 분할 + 병렬 워커 적용 후']
+  };
+  watch('lag', function (step) {
+    var d = LAG[step] || LAG[0];
+    var v = document.getElementById('lagv');
+    var n = document.getElementById('lagnote');
+    var b = document.getElementById('lagbar');
+    var bw = document.getElementById('lagbarwrap');
+    if (v) { v.textContent = d[0].toFixed(1); v.className = 'v ' + d[1]; }
+    if (n) { n.className = 'lbl ' + (d[1] === 'bad' ? 'rose' : d[1] === 'warn' ? 'amber' : 'green'); n.textContent = d[2]; }
+    if (b) b.style.width = Math.min(100, (d[0] / 50) * 100) + '%';
+    if (bw) bw.className = 'bar ' + (d[1] === 'bad' ? 'rose' : d[1] === 'ok' ? 'green' : '');
+    [['lg1', 1], ['lg2', 1], ['lg3', 2], ['lg4', 3], ['lg5', 4]].forEach(function (p) {
+      var el = document.getElementById(p[0]);
+      if (el) el.classList.toggle('done', step > p[1]);
+    });
+  });
+
+  /* 03 화면에 보이는 이름 */
+  watch('raw', function (step) {
+    var sc = document.getElementById('screen');
+    var nm = document.getElementById('screenname');
+    if (!sc || !nm) return;
+    if (step >= 5) { nm.textContent = '홍길동'; sc.className = 'screen fresh'; }
+    else if (step >= 3) { nm.textContent = '김철수'; sc.className = 'screen stale'; }
+    else { nm.textContent = '김철수'; sc.className = 'screen'; }
+  });
+
+  /* 05 샤드 부하 분포 */
+  var SK = {
+    0: { mode: '① 레인지 샤딩 — user_id 구간으로 나눈다', modeCls: 'lbl amber',
+         labels: ['user 0 – 249', 'user 250 – 499', 'user 500 – 749', 'user 750 – 999'],
+         load: [25, 25, 25, 25], cls: ['cool', 'cool', 'cool', 'cool'] },
+    1: { mode: '① 레인지 샤딩 — 초기 상태', modeCls: 'lbl green',
+         labels: ['user 0 – 249', 'user 250 – 499', 'user 500 – 749', 'user 750 – 999'],
+         load: [25, 25, 25, 25], cls: ['cool', 'cool', 'cool', 'cool'] },
+    2: { mode: '① 레인지 샤딩 — 신규 가입자가 계속 들어온다', modeCls: 'lbl rose',
+         labels: ['오래된 유저', '오래된 유저', '활동 보통', '신규 + 활동 집중'],
+         load: [8, 12, 30, 100], cls: ['cool', 'cool', 'warm', 'hot'] },
+    3: { mode: '② 해시 샤딩 — hash(user_id) % 4', modeCls: 'lbl cyan',
+         labels: ['hash % 4 = 0', 'hash % 4 = 1', 'hash % 4 = 2', 'hash % 4 = 3'],
+         load: [26, 24, 25, 25], cls: ['cool', 'cool', 'cool', 'cool'] },
+    4: { mode: '② 해시 샤딩 — 노드를 4 → 5로 늘리면?', modeCls: 'lbl rose',
+         labels: ['재배치 필요', '재배치 필요', '재배치 필요', '재배치 필요'],
+         load: [90, 90, 90, 90], cls: ['hot', 'hot', 'hot', 'hot'] },
+    5: { mode: '③ 논리 샤드 1024개 → 물리 노드 4대에 256개씩', modeCls: 'lbl violet',
+         labels: ['논리 0–255', '논리 256–511', '논리 512–767', '논리 768–1023'],
+         load: [25, 25, 25, 25], cls: ['cool', 'cool', 'cool', 'cool'] },
+    6: { mode: '③ 노드 추가 = 논리 샤드 이동만 (해시 재계산 없음)', modeCls: 'lbl green',
+         labels: ['논리 0–127', '논리 128–255', '논리 256–383', '논리 384–511'],
+         load: [13, 13, 13, 13], cls: ['cool', 'cool', 'moved', 'moved'] }
+  };
+  watch('shardkey', function (step) {
+    var d = SK[step] || SK[0];
+    var m = document.getElementById('skmode');
+    if (m) { m.className = d.modeCls; m.textContent = d.mode; }
+    var box = document.getElementById('skshards');
+    if (!box) return;
+    [].forEach.call(box.children, function (el, i) {
+      el.className = 'shard ' + d.cls[i];
+      var lab = document.getElementById('sk' + i);
+      if (lab) lab.textContent = d.labels[i];
+      var bar = el.querySelector('.load > i');
+      if (bar) bar.style.width = d.load[i] + '%';
+    });
+  });
+
+  /* 07 순서 진행 */
+  watch('order', function (step) {
+    [['o1', 1], ['o2', 1], ['o3', 2], ['o4', 2], ['o5', 3], ['o6', 3], ['o7', 4], ['o8', 5]].forEach(function (p) {
+      var el = document.getElementById(p[0]);
+      if (el) el.classList.toggle('done', step > p[1]);
+    });
+  });
+})();
+</script>
+</body>
+</html>

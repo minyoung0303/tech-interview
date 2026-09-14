@@ -78,6 +78,10 @@
       <a href="./proxy.html">프록시</a>
       <a href="./idempotency.html">멱등성</a>
       <a href="./deployment.html" aria-current="page">배포</a>
+      <a href="./scaling.html">스케일</a>
+      <a href="./container.html">컨테이너</a>
+      <a href="./vpc.html">VPC</a>
+      <a href="./dbscale.html">DB 확장</a>
     </nav>
   </div>
 </header>
@@ -96,7 +100,7 @@
       <span class="chip blue">Kubernetes / EKS</span>
       <span class="chip green">GitHub Actions</span>
       <span class="chip amber">ECR</span>
-      <span class="chip">7장면</span>
+      <span class="chip">8장면</span>
     </div>
   </section>
 
@@ -710,13 +714,78 @@ terminationGracePeriodSeconds: <span class="n">45</span>
     </section>
 
     <!-- ============ 전략 비교 ============ -->
-    <section class="scene" id="s8">
+    <section class="scene" id="s8" data-scene="strategy" data-steps="6" data-speed="2000">
       <header class="scene-head">
         <span class="scene-num">비교</span>
-        <h2>무중단 배포 전략 4가지</h2>
+        <h2>무중단 배포 전략 4가지 — <em>같은 교체를 다르게 한다</em></h2>
+        <p class="scene-lead">
+          네 방식의 차이는 <b>교체 중에 두 버전을 어떻게 다루는가</b>입니다.
+          그리고 어떤 방식을 쓰든 <b>헬스 체크 · graceful shutdown · 하위 호환 스키마</b>가 없으면
+          무중단이 되지 않습니다. 그게 이 장면의 결론입니다.
+        </p>
       </header>
 
-      <table class="tbl">
+      <div class="stage">
+        <div class="col-flex" style="gap:14px">
+
+          <!-- Recreate -->
+          <div>
+            <div class="row-flex between" style="margin-bottom:7px">
+              <span class="lbl" id="st-lbl-re">Recreate</span>
+              <span class="lbl" id="st-note-re">대기</span>
+            </div>
+            <div class="pods" id="st-re"></div>
+          </div>
+
+          <!-- Rolling -->
+          <div>
+            <div class="row-flex between" style="margin-bottom:7px">
+              <span class="lbl" id="st-lbl-ro">Rolling Update</span>
+              <span class="lbl" id="st-note-ro">대기</span>
+            </div>
+            <div class="pods" id="st-ro"></div>
+          </div>
+
+          <!-- Blue/Green -->
+          <div>
+            <div class="row-flex between" style="margin-bottom:7px">
+              <span class="lbl" id="st-lbl-bg">Blue / Green</span>
+              <span class="lbl" id="st-note-bg">대기</span>
+            </div>
+            <div class="row-flex" style="gap:10px;align-items:center">
+              <div class="pods" id="st-bg-blue"></div>
+              <span class="lbl cyan" id="st-switch">LB</span>
+              <div class="pods" id="st-bg-green"></div>
+            </div>
+          </div>
+
+          <!-- Canary -->
+          <div>
+            <div class="row-flex between" style="margin-bottom:7px">
+              <span class="lbl" id="st-lbl-ca">Canary</span>
+              <span class="lbl" id="st-note-ca">대기</span>
+            </div>
+            <div class="pods" id="st-ca"></div>
+            <div class="row-flex" style="gap:10px;margin-top:8px;align-items:center">
+              <span class="lbl" style="min-width:96px">신 버전 트래픽</span>
+              <div class="bar" style="flex:1"><span id="st-canbar"></span></div>
+              <span class="lbl" id="st-canval">0%</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>출발점은 같습니다. <b>v1 파드 3개</b>가 트래픽을 전부 받고 있고, 이제 v2로 교체해야 합니다.</p>
+        <p data-cap="2"><span class="k">02</span><b>Recreate</b> — 전부 내리고 새로 올립니다. 단순하고 리소스도 안 늘지만 <b>그 사이가 다운타임</b>입니다. 무중단이 아닙니다. 두 버전이 절대 공존하면 안 되는 경우(스키마 파괴적 변경)에는 오히려 이걸 씁니다.</p>
+        <p data-cap="3"><span class="k">03</span><b>Rolling Update</b> — 하나씩 순차 교체합니다. K8s 기본값이고 추가 리소스가 적습니다. 다만 교체 중에는 <b>v1과 v2가 동시에 트래픽을 받습니다.</b> 그래서 API와 스키마가 하위 호환이어야 합니다.</p>
+        <p data-cap="4"><span class="k">04</span><b>Blue/Green</b> — v2 환경을 <b>전체 다 띄운 뒤</b> LB를 한 번에 스위치합니다. <b>롤백이 즉시</b>(다시 스위치)이고, 스위치 전에 신 환경만 대상으로 스모크 테스트를 돌릴 수 있습니다. 대가는 <b>리소스 2배</b>입니다.</p>
+        <p data-cap="5"><span class="k">05</span><b>Canary</b> — v2 하나에 <b>5%만</b> 보내고 에러율과 p99를 봅니다. 문제없으면 25%, 50%, 100%로 늘립니다. 위험이 가장 작지만 <b>트래픽 분할과 지표 판단 구성</b>이 필요합니다(Argo Rollouts, Flagger).</p>
+        <p data-cap="6"><span class="k">06</span>그런데 <b>방식 선택보다 중요한 게 전제 조건</b>입니다. readinessProbe·graceful shutdown·preStop·하위 호환 스키마가 없으면 <b>어떤 방식을 써도 502가 납니다.</b> 아래 표와 05·06·07 장면이 그 이야기입니다.</p>
+      </div>
+
+      <table class="tbl" style="margin-top:18px">
         <thead><tr><th>전략</th><th>방식</th><th>장점</th><th>단점</th></tr></thead>
         <tbody>
           <tr class="locked"><td>Recreate</td><td>다 내리고 새로 올린다</td><td>단순, 리소스 절약</td><td><b>다운타임 발생</b></td></tr>
@@ -725,6 +794,40 @@ terminationGracePeriodSeconds: <span class="n">45</span>
           <tr><td>Canary</td><td>소수 트래픽만 신 버전 → 지표 확인 → 점진 확대</td><td>위험 최소화, 실사용자 검증</td><td>구성 복잡, 관측 도구 필요</td></tr>
         </tbody>
       </table>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">방식보다 중요한 것 — 무중단의 전제 조건</h3>
+      <p class="stack-note" style="margin:0 0 12px">
+        <b>여기가 이 질문의 진짜 승부처입니다.</b> 방식 이름 4개는 누구나 외웁니다.
+      </p>
+      <table class="tbl">
+        <thead><tr><th>전제</th><th>없으면 어떻게 되나</th></tr></thead>
+        <tbody>
+          <tr class="hit"><td><code>readinessProbe</code></td><td>아직 준비 안 된 파드로 트래픽이 가서 <b>502 / 503</b></td></tr>
+          <tr class="hit"><td>Graceful Shutdown</td><td>SIGTERM 받자마자 죽어서 <b>처리 중인 요청이 끊긴다</b></td></tr>
+          <tr class="hit"><td><code>preStop</code> + sleep</td><td>엔드포인트 전파(LB 등록 해제)가 끝나기 전에 죽어서 <b>502</b> → 06 장면</td></tr>
+          <tr><td>커넥션 드레이닝</td><td>종료 중인 서버로 새 요청이 계속 들어온다</td></tr>
+          <tr class="locked"><td>하위 호환 스키마</td><td>구 버전 파드가 없는 컬럼을 조회해서 <b>500 폭발</b> → 07 장면 확장-수축</td></tr>
+          <tr><td>멱등성</td><td>LB나 클라이언트가 재시도할 때 <b>중복 처리</b> (<a href="./idempotency.html">멱등성 편</a>)</td></tr>
+          <tr><td>롤백 가능한 이미지 태그</td><td><code>latest</code>면 되돌릴 대상이 없다 → 03 장면</td></tr>
+        </tbody>
+      </table>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>Canary와 A/B 테스트는 다릅니다.</b></p>
+          <p>
+            <b>Canary는 배포 안전장치</b>이고 <b>A/B 테스트는 제품 실험</b>입니다. 목적이 다릅니다.
+            Canary는 "문제 없나?"를 보고, A/B는 "어느 쪽이 전환율이 높나?"를 봅니다.
+            이 구분을 짚으면 좋은 가산점입니다.
+          </p>
+          <p>
+            그리고 무중단 배포의 최종 형태는 <b>Feature Flag로 배포(deploy)와 릴리스(release)를 분리하는 것</b>입니다.
+            코드는 미리 배포해두고 기능만 플래그로 켭니다. 문제가 생기면 <b>재배포 없이 플래그를 끄면 되므로
+            롤백이 초 단위</b>가 됩니다. 이 문장을 쓸 수 있으면 답변의 층이 하나 올라갑니다.
+          </p>
+        </div>
+      </div>
 
       <h3 style="font-size:15px;margin:22px 0 12px">설정과 시크릿 관리</h3>
       <p class="stack-note" style="margin:0 0 12px">
@@ -881,7 +984,7 @@ ______(kubectl set image / docker compose / SSH 스크립트)로 배포했습니
 
   <div class="wrap pager">
     <a href="./idempotency.html"><small>← 이전</small>04 결제 멱등성</a>
-    <a class="next" href="./index.html"><small>목록 →</small>전체 주제</a>
+    <a class="next" href="./scaling.html"><small>다음 →</small>06 스케일</a>
   </div>
 </main>
 
@@ -995,6 +1098,83 @@ ______(kubectl set image / docker compose / SSH 스크립트)로 배포했습니
       if (!el) continue;
       el.className = 'stepline' + (i === step ? ' on' : i < step ? ' done' : '');
     }
+  });
+
+  /* 전략 비교 — 네 방식을 같은 출발점에서 재생한다 */
+  function render(id, kinds) {
+    var box = document.getElementById(id);
+    if (!box) return;
+    box.innerHTML = '';
+    kinds.forEach(function (k) {
+      var d = document.createElement('div');
+      d.className = 'pod ' + k;
+      d.innerHTML = LABEL[k] || k;
+      box.appendChild(d);
+    });
+  }
+  function note(id, text, color) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.className = 'lbl' + (color ? ' ' + color : '');
+    el.textContent = text;
+  }
+  var V1 = ['old', 'old', 'old'];
+  var V2 = ['new', 'new', 'new'];
+  var STRAT = {
+    1: {
+      re: V1, reN: ['교체 전', ''],
+      ro: V1, roN: ['교체 전', ''],
+      bgB: V1, bgG: [], bgN: ['교체 전', ''], sw: ['LB → Blue', 'cyan'],
+      ca: V1, caN: ['교체 전', ''], can: 0
+    },
+    2: {
+      re: ['gone', 'gone', 'gone'], reN: ['전부 종료 · 다운타임 발생 503', 'rose'],
+      ro: V1, roN: ['교체 전', ''],
+      bgB: V1, bgG: [], bgN: ['교체 전', ''], sw: ['LB → Blue', 'cyan'],
+      ca: V1, caN: ['교체 전', ''], can: 0
+    },
+    3: {
+      re: V2, reN: ['완료 — 단순하지만 무중단이 아니다', 'amber'],
+      ro: ['new', 'old', 'old'], roN: ['순차 교체 중 · v1/v2 공존', 'amber'],
+      bgB: V1, bgG: [], bgN: ['교체 전', ''], sw: ['LB → Blue', 'cyan'],
+      ca: V1, caN: ['교체 전', ''], can: 0
+    },
+    4: {
+      re: V2, reN: ['완료', ''],
+      ro: V2, roN: ['완료 — 추가 리소스 최소', 'green'],
+      bgB: ['term', 'term', 'term'], bgG: V2,
+      bgN: ['스위치 완료 · 롤백은 다시 스위치', 'green'], sw: ['LB → Green', 'green'],
+      ca: V1, caN: ['교체 전', ''], can: 0
+    },
+    5: {
+      re: V2, reN: ['완료', ''],
+      ro: V2, roN: ['완료', ''],
+      bgB: ['gone', 'gone', 'gone'], bgG: V2, bgN: ['구 환경 폐기 — 리소스 2배 구간 종료', ''], sw: ['LB → Green', 'green'],
+      ca: ['old', 'old', 'old', 'new'], caN: ['5% 검증 중 · 에러율 / p99 확인', 'amber'], can: 5
+    },
+    6: {
+      re: V2, reN: ['완료', ''],
+      ro: V2, roN: ['완료', ''],
+      bgB: ['gone', 'gone', 'gone'], bgG: V2, bgN: ['완료', ''], sw: ['LB → Green', 'green'],
+      ca: V2, caN: ['지표 정상 → 25% → 50% → 100% 승격', 'green'], can: 100
+    }
+  };
+  watch('strategy', function (step) {
+    var d = STRAT[step] || STRAT[1];
+    render('st-re', d.re);
+    render('st-ro', d.ro);
+    render('st-bg-blue', d.bgB);
+    render('st-bg-green', d.bgG);
+    render('st-ca', d.ca);
+    note('st-note-re', d.reN[0], d.reN[1]);
+    note('st-note-ro', d.roN[0], d.roN[1]);
+    note('st-note-bg', d.bgN[0], d.bgN[1]);
+    note('st-note-ca', d.caN[0], d.caN[1]);
+    note('st-switch', d.sw[0], d.sw[1]);
+    var bar = document.getElementById('st-canbar');
+    var val = document.getElementById('st-canval');
+    if (bar) bar.style.width = d.can + '%';
+    if (val) val.textContent = d.can + '%';
   });
 })();
 </script>
