@@ -398,7 +398,7 @@ UPDATE orders SET status = 'DONE' WHERE status = 'PENDING';
 
 그래서 인덱스는 **성능 도구이면서 동시에 동시성 도구**다.
 "인덱스가 왜 중요한가"에 조회 속도 말고 이 답을 하나 더 얹을 수 있으면 차별화된다.
-[01-transaction.md](./01-transaction.md) 4번과 이어진다.
+[transaction.md](./transaction.md) 4번과 이어진다.
 
 ---
 
