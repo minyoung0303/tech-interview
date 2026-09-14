@@ -1,0 +1,811 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>컨테이너 시각화 — Docker vs VM · namespace/cgroup · 레이어 캐시 · PID 1</title>
+<meta name="description" content="컨테이너와 VM의 차이를 커널 공유 관점에서 애니메이션으로 봅니다. namespace/cgroup/UnionFS, 이미지 레이어 캐시, 멀티 스테이지 빌드, PID 1 시그널 문제까지.">
+<link rel="stylesheet" href="./assets/base.css">
+<style>
+/* 01 스택 다이어그램 */
+.stack { display: grid; gap: 4px; }
+.stack .sl {
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--ink-2);
+  background: rgba(255,255,255,.03);
+  text-align: center;
+  transition: all .5s var(--ease);
+}
+.stack .sl.app { background: rgba(94,231,245,.09); border-color: rgba(94,231,245,.35); color: var(--cyan); }
+.stack .sl.guest { background: rgba(251,113,133,.09); border-color: rgba(251,113,133,.35); color: var(--rose); }
+.stack .sl.kernel { background: rgba(69,217,154,.1); border-color: rgba(69,217,154,.4); color: var(--green); }
+.stack .sl.hw { color: var(--ink-3); }
+.stack .sl.flag { box-shadow: 0 0 0 3px rgba(251,191,36,.18); border-color: rgba(251,191,36,.5); }
+.stack .duo { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+
+/* 02 부팅/크기 막대 */
+.mbar { display: grid; grid-template-columns: 96px 1fr 74px; gap: 10px; align-items: center; margin-bottom: 9px; }
+.mbar .nm { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); }
+.mbar .vl { font-family: var(--mono); font-size: 11.5px; color: var(--ink-3); text-align: right; }
+.mbar .t { height: 13px; border-radius: 999px; background: rgba(255,255,255,.05); border: 1px solid var(--line-soft); overflow: hidden; }
+.mbar .t > i { display: block; height: 100%; width: 0; transition: width 1.1s var(--ease); }
+.mbar .t.vm > i { background: linear-gradient(90deg, var(--amber), var(--rose)); }
+.mbar .t.ct > i { background: linear-gradient(90deg, var(--cyan), var(--green)); }
+
+/* 04 이미지 레이어 */
+.lays { display: grid; gap: 4px; }
+.lay {
+  display: grid; grid-template-columns: 76px 1fr 62px; gap: 10px; align-items: center;
+  border: 1px solid var(--line-soft); border-radius: 6px;
+  padding: 8px 11px; font-family: var(--mono); font-size: 11.5px;
+  color: var(--ink-2); background: rgba(255,255,255,.025);
+  transition: all .5s var(--ease);
+}
+.lay .tag { font-size: 10px; color: var(--ink-3); }
+.lay .sz { text-align: right; font-size: 10.5px; color: var(--ink-3); }
+.lay.cached { border-color: rgba(69,217,154,.45); background: rgba(69,217,154,.07); color: var(--green); }
+.lay.rebuilt { border-color: rgba(251,113,133,.5); background: rgba(251,113,133,.07); color: var(--rose); }
+.lay.rw { border-style: dashed; border-color: rgba(251,191,36,.5); color: var(--amber); }
+
+/* 06 시그널 */
+.sig { font-family: var(--mono); font-size: 11.5px; }
+</style>
+</head>
+<body>
+<a class="skip-link" href="#s1">본문으로 건너뛰기</a>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="home" href="./index.html">visualize<span>/</span>backend</a>
+    <nav aria-label="주제 바로가기">
+      <a href="./transaction.html">트랜잭션</a>
+      <a href="./db-index.html">인덱스</a>
+      <a href="./proxy.html">프록시</a>
+      <a href="./idempotency.html">멱등성</a>
+      <a href="./deployment.html">배포</a>
+      <a href="./scaling.html">스케일</a>
+      <a href="./container.html" aria-current="page">컨테이너</a>
+      <a href="./vpc.html">VPC</a>
+      <a href="./dbscale.html">DB 확장</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <section class="hero wrap">
+    <p class="eyebrow">07 · Docker / Container vs VM</p>
+    <h1><em>컨테이너</em><br>가벼운 VM이 아니라, 격리된 프로세스다</h1>
+    <p>
+      "컨테이너는 가벼운 VM"이라고 설명하면 절반만 맞습니다.
+      핵심은 <b>커널을 공유하는지</b>이고, 컨테이너는 리눅스의
+      <b>namespace로 격리, cgroup으로 자원 제한</b>을 건 <b>프로세스</b>입니다.
+      호스트에서 <code>ps</code>를 치면 그냥 프로세스로 보입니다.
+    </p>
+    <div class="hero-meta">
+      <span class="chip cyan">namespace · cgroup</span>
+      <span class="chip green">OverlayFS 레이어</span>
+      <span class="chip violet">멀티 스테이지</span>
+      <span class="chip rose">PID 1 시그널</span>
+      <span class="chip">7장면</span>
+    </div>
+  </section>
+
+  <nav class="scene-nav" aria-label="장면 목차">
+    <div class="wrap">
+      <a href="#s1">01 커널 공유</a>
+      <a href="#s2">02 크기와 속도</a>
+      <a href="#s3">03 격리의 정체</a>
+      <a href="#s4">04 레이어 캐시</a>
+      <a href="#s5">05 왜 쓰는가</a>
+      <a href="#s6">06 PID 1 함정</a>
+      <a href="#s7">07 함께 쓴다</a>
+      <a href="#s8">실무 함정</a>
+      <a href="#s9">정리</a>
+    </div>
+  </nav>
+
+  <div class="wrap scenes">
+
+    <!-- ============ 01 커널 공유 ============ -->
+    <section class="scene" id="s1" data-scene="stack" data-steps="5" data-speed="2000">
+      <header class="scene-head">
+        <span class="scene-num">01</span>
+        <h2>차이는 딱 하나에서 시작한다 — <em>커널을 공유하는가</em></h2>
+        <p class="scene-lead">
+          VM은 하이퍼바이저 위에 <b>게스트 OS 전체와 별도 커널</b>을 올립니다.
+          컨테이너는 <b>호스트 커널을 공유</b>합니다. 크기, 속도, 격리 강도가 모두 여기서 갈립니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="split">
+          <div class="pane">
+            <h4>가상 머신 (VM)</h4>
+            <div class="stack">
+              <div class="duo">
+                <div class="sl app">App A</div>
+                <div class="sl app">App B</div>
+              </div>
+              <div class="duo">
+                <div class="sl guest" id="g1">게스트 OS<br>+ 커널</div>
+                <div class="sl guest" id="g2">게스트 OS<br>+ 커널</div>
+              </div>
+              <div class="sl">하이퍼바이저</div>
+              <div class="sl kernel">호스트 OS + 커널</div>
+              <div class="sl hw">하드웨어</div>
+            </div>
+            <p style="margin:12px 0 0;font-size:13px;color:var(--ink-2)">
+              커널이 <b style="color:var(--rose)">게스트마다 하나씩</b> 있습니다.
+              그래서 무겁지만 <b>격리가 강합니다.</b>
+            </p>
+          </div>
+
+          <div class="pane good">
+            <h4>컨테이너</h4>
+            <div class="stack">
+              <div class="duo">
+                <div class="sl app">App A</div>
+                <div class="sl app">App B</div>
+              </div>
+              <div class="sl" data-from="2">컨테이너 런타임 (containerd)</div>
+              <div class="sl kernel" id="shared">호스트 OS + <b>커널 (공유)</b></div>
+              <div class="sl hw">하드웨어</div>
+            </div>
+            <p style="margin:12px 0 0;font-size:13px;color:var(--ink-2)">
+              커널이 <b style="color:var(--green)">하나</b>입니다. 게스트 OS 계층이 아예 없습니다.
+              그래서 가볍지만 <b>커널을 공유한다는 위험</b>이 남습니다.
+            </p>
+          </div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:18px;gap:8px">
+          <span class="lbl amber" data-at="3">컨테이너 이미지에 들어 있는 "OS"는 커널이 아니라 <b>유저 공간 파일들</b>이다</span>
+          <span class="lbl rose" data-at="4">커널 취약점은 호스트 전체에 영향을 준다</span>
+          <span class="lbl green" data-at="5">그래서 강한 격리가 필요하면 마이크로 VM을 쓴다</span>
+        </div>
+
+        <div style="margin-top:14px" data-at="3">
+          <pre class="code"><span class="c"># alpine 이미지 안에 커널이 있는 게 아니다</span>
+$ docker run --rm alpine uname -r
+<span class="n">6.6.31-linuxkit</span>   <span class="c">← 호스트 커널 버전이 그대로 나온다</span>
+
+<span class="c"># 호스트에서 보면 컨테이너는 그냥 프로세스다</span>
+$ ps -ef | grep server
+appuser  <span class="n">21841</span>  ...  /app/server   <span class="c">← "가상 머신"이 아니다</span></pre>
+        </div>
+
+        <div style="margin-top:14px" data-at="5">
+          <div class="pane">
+            <h4>중간 지점 — 마이크로 VM</h4>
+            <p style="margin:0;font-size:13.5px;color:var(--ink-2)">
+              AWS <b>Lambda와 Fargate는 Firecracker</b>라는 마이크로 VM 위에서 돕니다.
+              컨테이너의 속도와 VM의 격리를 동시에 얻으려는 접근이고,
+              같은 계열로 <b>gVisor, Kata Containers</b>가 있습니다.
+              이름만 알아도 답변에 쓸 수 있습니다.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>앱 두 개를 격리해서 돌린다는 목적은 같습니다. 구조를 보면 층수가 다릅니다.</p>
+        <p data-cap="2"><span class="k">02</span>VM은 게스트 OS와 <b>커널을 게스트마다</b> 올립니다. 컨테이너는 그 계층이 없고 <b>호스트 커널 하나를 공유</b>합니다.</p>
+        <p data-cap="3"><span class="k">03</span>그럼 <code>alpine</code> 이미지 안의 OS는 뭔가요? <b>커널이 아니라 유저 공간 파일들</b>(libc, 셸, 패키지)입니다. <code>uname -r</code>을 치면 호스트 커널이 나옵니다.</p>
+        <p data-cap="4"><span class="k">04</span>커널을 공유한다는 건 <b>격리가 VM보다 약하다</b>는 뜻입니다. 커널 취약점으로 컨테이너를 탈출하면 호스트 전체가 영향을 받습니다.</p>
+        <p data-cap="5"><span class="k">05</span>그래서 남의 코드를 돌리는 멀티테넌시 환경에서는 <b>마이크로 VM</b>을 씁니다. Lambda가 그렇습니다.</p>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>"macOS에서 Docker는 왜 느린가요?" — 답이 여기 있습니다.</b></p>
+          <p>
+            컨테이너는 <b>리눅스 커널 기능</b>입니다. 그래서 macOS나 Windows의 Docker Desktop은
+            <b>내부에 리눅스 VM을 띄우고 그 안에서 컨테이너를 돌립니다.</b>
+            파일 시스템을 VM 경계 너머로 공유하니 볼륨 마운트가 느립니다.
+            이걸 말하면 개념을 정확히 이해한 것으로 읽힙니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 02 크기와 속도 ============ -->
+    <section class="scene" id="s2" data-scene="weight" data-steps="4" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">02</span>
+        <h2>커널이 없으니 <em>MB 단위, 초 단위</em>가 된다</h2>
+        <p class="scene-lead">
+          이 차이가 실무에서 의미하는 건 하나입니다 —
+          <b>오토 스케일링이 트래픽 스파이크를 따라갈 수 있는가.</b>
+        </p>
+      </header>
+
+      <div class="stage">
+        <div>
+          <p style="margin:0 0 10px"><span class="lbl amber">시작 시간</span></p>
+          <div class="mbar"><span class="nm">VM</span><span class="t vm"><i id="b-vmboot"></i></span><span class="vl" id="v-vmboot">–</span></div>
+          <div class="mbar"><span class="nm">컨테이너</span><span class="t ct"><i id="b-ctboot"></i></span><span class="vl" id="v-ctboot">–</span></div>
+        </div>
+
+        <div style="margin-top:18px" data-from="2">
+          <p style="margin:0 0 10px"><span class="lbl violet">이미지 / 디스크 크기</span></p>
+          <div class="mbar"><span class="nm">VM 이미지</span><span class="t vm"><i id="b-vmsz"></i></span><span class="vl" id="v-vmsz">–</span></div>
+          <div class="mbar"><span class="nm">golang 베이스</span><span class="t vm"><i id="b-golang"></i></span><span class="vl" id="v-golang">–</span></div>
+          <div class="mbar"><span class="nm">멀티 스테이지</span><span class="t ct"><i id="b-multi"></i></span><span class="vl" id="v-multi">–</span></div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:18px;gap:8px">
+          <span class="lbl amber" data-at="1">VM은 커널 부팅 + init + 서비스 시작을 다 거친다</span>
+          <span class="lbl violet" data-at="2">크기는 그대로 이미지 pull 시간이 된다</span>
+          <span class="lbl green" data-at="3">멀티 스테이지 빌드로 800MB → 20MB</span>
+          <span class="lbl cyan" data-at="4">그래서 스파이크 대응 속도가 다르다</span>
+        </div>
+
+        <div style="margin-top:16px" data-from="3">
+          <pre class="code"><span class="c"># ---------- build stage ----------</span>
+<span class="k">FROM</span> golang:1.23-alpine <span class="k">AS</span> builder
+<span class="k">WORKDIR</span> /app
+<span class="k">COPY</span> go.mod go.sum ./
+<span class="k">RUN</span> go mod download            <span class="c"># 의존성만 먼저 → 캐시가 살아남는다</span>
+<span class="k">COPY</span> . .
+<span class="k">RUN</span> CGO_ENABLED=<span class="n">0</span> go build -ldflags=<span class="s">"-s -w"</span> -o /app/server ./cmd/server
+
+<span class="c"># ---------- runtime stage ----------</span>
+<span class="k">FROM</span> alpine:3.20               <span class="c"># 컴파일러도 소스도 남지 않는다</span>
+<span class="k">RUN</span> apk add --no-cache ca-certificates tzdata && adduser -D -u <span class="n">10001</span> appuser
+<span class="k">COPY</span> --from=builder /app/server /app/server
+<span class="k">USER</span> appuser                   <span class="c"># root로 실행하지 않는다</span>
+<span class="k">ENTRYPOINT</span> [<span class="s">"/app/server"</span>]   <span class="c"># exec 형식 — 06 장면에서 이유를 본다</span></pre>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>VM은 <b>커널 부팅부터</b> 시작합니다. 수십 초에서 분 단위입니다.</p>
+        <p data-cap="2"><span class="k">02</span>크기도 다릅니다. VM 이미지는 GB, 컨테이너는 MB입니다. 이 크기는 배포할 때마다 <b>이미지 pull 시간</b>으로 돌아옵니다.</p>
+        <p data-cap="3"><span class="k">03</span><code>golang</code> 베이스로 그냥 만들면 800MB가 넘습니다. <b>멀티 스테이지 빌드</b>로 런타임만 남기면 20MB대가 됩니다. 크기만 아니라 <b>보안</b>도 이득입니다 — 최종 이미지에 컴파일러와 소스가 남지 않습니다.</p>
+        <p data-cap="4"><span class="k">04</span>그래서 컨테이너는 트래픽 스파이크에 <b>초 단위로 대응</b>합니다. VM 기반 오토 스케일링은 늦습니다. Scale-out 이야기와 직접 연결됩니다(<a href="./scaling.html">스케일 편</a>).</p>
+      </div>
+    </section>
+
+    <!-- ============ 03 격리의 정체 ============ -->
+    <section class="scene" id="s3" data-scene="isolate" data-steps="4" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">03</span>
+        <h2>격리의 정체 — <em>namespace · cgroup · UnionFS</em></h2>
+        <p class="scene-lead">
+          이 세 단어를 말할 수 있으면 "컨테이너를 안다"에서 "컨테이너를 이해한다"로 넘어갑니다.
+          모두 <b>리눅스 커널 기능</b>이고, Docker는 그걸 쓰기 쉽게 묶은 도구입니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="flowv">
+          <div class="fstep" id="f-ns" data-from="1">
+            <span class="no">01</span>
+            <span><b>namespace — 격리.</b> PID · 네트워크 · 마운트 · 호스트명 · 사용자를 분리해서
+            컨테이너가 <b>자기만의 세계</b>를 보게 만든다. 컨테이너 안에서 <code>ps</code>를 치면 자기 프로세스만 보인다</span>
+          </div>
+          <div class="fstep" id="f-cg" data-from="2">
+            <span class="no">02</span>
+            <span><b>cgroup — 자원 제한.</b> CPU · 메모리 · I/O 사용량의 상한.
+            메모리 상한을 넘으면 <b>OOMKilled</b>로 컨테이너가 죽는다</span>
+          </div>
+          <div class="fstep" id="f-fs" data-from="3">
+            <span class="no">03</span>
+            <span><b>UnionFS / OverlayFS — 레이어.</b> 읽기 전용 이미지 레이어 위에
+            쓰기 가능 레이어를 얹는다(Copy-on-Write). 다음 장면에서 자세히 본다</span>
+          </div>
+        </div>
+
+        <div style="margin-top:16px" data-from="4">
+          <div class="split">
+            <div class="pane">
+              <h4>namespace가 만드는 착각</h4>
+              <pre class="code" style="margin:0"><span class="c"># 컨테이너 안</span>
+$ ps -ef
+PID  CMD
+  <span class="n">1</span>  /app/server        <span class="c">← 자기가 1번이라고 믿는다</span>
+
+<span class="c"># 호스트에서 같은 프로세스</span>
+$ ps -ef | grep server
+PID    CMD
+<span class="n">21841</span>  /app/server        <span class="c">← 실제로는 그냥 프로세스</span></pre>
+            </div>
+            <div class="pane bad">
+              <h4>cgroup을 런타임이 못 읽으면</h4>
+              <p style="margin:0 0 10px;font-size:13.5px;color:var(--ink-2)">
+                컨테이너에 <code>limits.cpu: 2</code>를 줬는데 런타임이 <b>호스트 전체 사양(예: 64코어)</b>으로
+                오인하면 스레드/GC를 과도하게 잡습니다.
+              </p>
+              <dl class="kv">
+                <dt>Go</dt><dd><code>GOMAXPROCS</code>를 limit에 맞춘다 (<code>automaxprocs</code>)</dd>
+                <dt>JVM</dt><dd><code>-XX:MaxRAMPercentage</code> 확인</dd>
+                <dt>Node</dt><dd><code>--max-old-space-size</code></dd>
+              </dl>
+              <p style="margin:10px 0 0;font-size:13px;color:var(--ink-2)">
+                "리소스 limit을 걸었는데 성능이 이상하다"의 흔한 원인입니다.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span><b>namespace</b>가 격리를 만듭니다. 컨테이너는 자기 프로세스만 보고, 자기 네트워크 인터페이스만 보고, 자기 파일시스템만 봅니다.</p>
+        <p data-cap="2"><span class="k">02</span><b>cgroup</b>이 자원을 제한합니다. 이게 없으면 한 컨테이너가 호스트 CPU를 다 먹습니다. 메모리 상한을 넘으면 <b>OOMKilled</b>입니다.</p>
+        <p data-cap="3"><span class="k">03</span><b>OverlayFS</b>가 레이어를 만듭니다. 이미지를 여러 컨테이너가 공유할 수 있는 이유입니다.</p>
+        <p data-cap="4"><span class="k">04</span>왼쪽은 namespace가 만든 착각(자기가 PID 1이라 믿는다), 오른쪽은 cgroup을 런타임이 못 읽을 때 생기는 실무 문제입니다.</p>
+      </div>
+    </section>
+
+    <!-- ============ 04 레이어 캐시 ============ -->
+    <section class="scene" id="s4" data-scene="layer" data-steps="5" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">04</span>
+        <h2>이미지는 <em>불변 레이어</em>, 컨테이너는 그 위의 <em>쓰기 레이어</em></h2>
+        <p class="scene-lead">
+          이미지는 클래스, 컨테이너는 인스턴스입니다.
+          레이어를 여러 컨테이너가 <b>공유</b>하므로 같은 이미지 100개를 띄워도 디스크가 100배 들지 않습니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="lays">
+          <div class="lay rw" data-from="4"><span class="tag">컨테이너</span><span>쓰기 가능 레이어 (Copy-on-Write)</span><span class="sz">임시</span></div>
+          <div class="lay" id="l4"><span class="tag">이미지 L4</span><span><code>COPY --from=builder /app/server</code></span><span class="sz">12MB</span></div>
+          <div class="lay" id="l3"><span class="tag">이미지 L3</span><span><code>RUN go build</code></span><span class="sz">–</span></div>
+          <div class="lay" id="l2"><span class="tag">이미지 L2</span><span><code>RUN go mod download</code></span><span class="sz">180MB</span></div>
+          <div class="lay" id="l1"><span class="tag">이미지 L1</span><span><code>FROM alpine:3.20</code></span><span class="sz">7MB</span></div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:18px;gap:8px">
+          <span class="lbl cyan" data-at="1">아래에서 위로 쌓인다. 각 명령이 레이어 하나</span>
+          <span class="lbl green" data-at="2">소스 한 줄만 바꿨다 → 아래 레이어는 캐시 재사용</span>
+          <span class="lbl rose" data-at="3">순서를 뒤집으면 (COPY . . 를 먼저) 의존성부터 전부 다시 받는다</span>
+          <span class="lbl amber" data-at="4">컨테이너가 쓴 데이터는 이 임시 레이어에 있고, 컨테이너와 함께 사라진다</span>
+          <span class="lbl violet" data-at="5">그래서 상태는 볼륨 · S3 · RDS로 뺀다</span>
+        </div>
+
+        <div style="margin-top:16px" data-at="3">
+          <div class="split">
+            <div class="pane bad">
+              <h4>❌ 캐시가 죽는 순서</h4>
+              <pre class="code" style="margin:0"><span class="k">COPY</span> . .                <span class="c">← 소스가 먼저</span>
+<span class="k">RUN</span> go mod download
+<span class="k">RUN</span> go build
+<span class="c"># 소스 한 줄 수정 → 의존성부터 재실행</span>
+<span class="c"># 빌드 10초 → 3분</span></pre>
+            </div>
+            <div class="pane good">
+              <h4>✅ 자주 바뀌는 것을 뒤에</h4>
+              <pre class="code" style="margin:0"><span class="k">COPY</span> go.mod go.sum ./
+<span class="k">RUN</span> go mod download      <span class="c">← 캐시 유지</span>
+<span class="k">COPY</span> . .
+<span class="k">RUN</span> go build
+<span class="c"># 소스만 바뀌면 위 두 줄은 재사용</span></pre>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:14px" data-from="5">
+          <div class="warn" style="margin-top:0">
+            <p><b>레이어는 삭제로 지워지지 않습니다.</b></p>
+            <p style="margin-top:6px">
+              <code>RUN rm secret.key</code>를 나중 레이어에서 해도 <b>앞 레이어에는 파일이 그대로 남습니다.</b>
+              이미지를 받은 사람은 히스토리에서 꺼낼 수 있습니다.
+              시크릿은 애초에 이미지에 넣지 않고 <b>환경 변수 / Secrets Manager</b>로 주입합니다.
+              같은 이유로 <code>apt-get install</code>과 <code>rm -rf /var/lib/apt/lists</code>는
+              <b>한 <code>RUN</code>에 묶어야</b> 크기가 실제로 줄어듭니다.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>Dockerfile의 각 명령이 레이어 하나를 만듭니다. 아래에서 위로 쌓이고, <b>모두 읽기 전용</b>입니다.</p>
+        <p data-cap="2"><span class="k">02</span>소스 한 줄을 바꿔 다시 빌드합니다. <code>go.mod</code>가 그대로면 <b>의존성 레이어 캐시가 재사용</b>됩니다.</p>
+        <p data-cap="3"><span class="k">03</span>순서를 뒤집으면 어떻게 될까요. <code>COPY . .</code>이 먼저면 소스가 바뀔 때마다 그 뒤 레이어가 <b>전부 무효화</b>됩니다. 빌드가 10초에서 3분으로 늘어납니다.</p>
+        <p data-cap="4"><span class="k">04</span>컨테이너를 실행하면 맨 위에 <b>쓰기 가능 레이어</b>가 얹힙니다. 여기에 쓴 데이터는 <b>컨테이너가 사라지면 없어집니다.</b></p>
+        <p data-cap="5"><span class="k">05</span>그래서 컨테이너는 stateless여야 합니다. 파일은 S3, 데이터는 RDS, 로그는 stdout으로 보냅니다.</p>
+      </div>
+    </section>
+
+    <!-- ============ 05 왜 쓰는가 ============ -->
+    <section class="scene" id="s5" data-scene="why" data-steps="5" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">05</span>
+        <h2>Docker를 쓰는 첫 번째 이유는 <em>환경 일관성</em>이다</h2>
+        <p class="scene-lead">
+          "편해서"가 아니라 <b>"내 로컬에서는 되는데요"를 구조적으로 없애기 때문</b>입니다.
+          이 단어를 답변에 반드시 넣습니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="split">
+          <div class="pane bad">
+            <h4>❌ 컨테이너 없이</h4>
+            <div class="col-flex" style="gap:6px">
+              <div class="node" style="min-width:auto">로컬<small>Go 1.23 / macOS / OpenSSL 3.3</small></div>
+              <div class="node" style="min-width:auto" data-from="2">CI<small>Go 1.21 / ubuntu-22.04</small></div>
+              <div class="node rose" style="min-width:auto" data-from="3">운영<small>Go 1.20 / Amazon Linux 2 / TZ=UTC</small></div>
+            </div>
+            <p style="margin:12px 0 0;font-size:13px;color:var(--ink-2)" data-from="3">
+              <b style="color:var(--rose)">테스트는 통과했고 운영에서만 깨집니다.</b>
+              타임존이 달라서 날짜 계산이 하루 틀리는 사고가 대표적입니다.
+            </p>
+          </div>
+          <div class="pane good">
+            <h4>✅ 이미지 하나로</h4>
+            <div class="row-flex center" style="min-height:118px">
+              <div class="node green" data-from="4" style="min-width:auto">
+                myapp:<span style="color:var(--cyan)">a3f91c2</span>
+                <small>Go 1.23 · alpine 3.20 · tzdata · CA certs</small>
+              </div>
+            </div>
+            <div class="row-flex center" style="gap:6px" data-from="4">
+              <span class="lbl green">로컬</span><span class="lbl green">CI</span>
+              <span class="lbl green">스테이징</span><span class="lbl green">운영</span>
+            </div>
+            <p style="margin:12px 0 0;font-size:13px;color:var(--ink-2)" data-from="4">
+              <b style="color:var(--green)">네 곳이 같은 이미지를 돌립니다.</b>
+              런타임, 시스템 라이브러리, 타임존까지 고정됩니다.
+            </p>
+          </div>
+        </div>
+
+        <div style="margin-top:18px" data-from="5">
+          <div class="flowv">
+            <div class="fstep on"><span class="no">01</span><span><b>환경 일관성</b> — 런타임·라이브러리·타임존까지 이미지에 고정. "로컬에서는 되는데"가 사라진다</span></div>
+            <div class="fstep"><span class="no">02</span><span><b>배포 단위 표준화</b> — 언어가 Go든 Python이든 <b>배포 단위는 이미지 하나</b>. CI/CD·모니터링을 언어와 무관하게 짠다</span></div>
+            <div class="fstep"><span class="no">03</span><span><b>즉시 롤백</b> — 태그가 커밋 SHA면 <b>이전 태그 재배포가 롤백</b>이다. 그래서 <code>latest</code>를 쓰면 안 된다</span></div>
+            <div class="fstep"><span class="no">04</span><span><b>빠른 Scale-out</b> — 초 단위 시작. 트래픽 스파이크를 따라간다</span></div>
+            <div class="fstep"><span class="no">05</span><span><b>오케스트레이션의 전제</b> — K8s의 셀프 힐링·오토 스케일링·롤링 업데이트는 컨테이너가 <b>가볍고 언제든 버려도 되는 것</b>이라는 가정 위에 있다</span></div>
+            <div class="fstep"><span class="no">06</span><span><b>격리와 이식성</b> — 한 호스트에서 MySQL 5.7과 8.0을 충돌 없이 돌린다</span></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>로컬은 macOS, Go 1.23입니다.</p>
+        <p data-cap="2"><span class="k">02</span>CI는 ubuntu에 Go 1.21입니다. 벌써 다릅니다.</p>
+        <p data-cap="3"><span class="k">03</span>운영은 Amazon Linux, Go 1.20, 타임존도 다릅니다. <b>테스트는 통과했는데 운영에서만 깨집니다.</b></p>
+        <p data-cap="4"><span class="k">04</span>이미지 하나로 통일하면 <b>네 곳이 같은 것을 돌립니다.</b> 이게 환경 일관성입니다.</p>
+        <p data-cap="5"><span class="k">05</span>그 위에 나머지 이득이 얹힙니다. <b>1번을 먼저 말하고 3번(롤백)까지 가면</b> 답변이 완성됩니다.</p>
+      </div>
+    </section>
+
+    <!-- ============ 06 PID 1 ============ -->
+    <section class="scene" id="s6" data-scene="pid1" data-steps="6" data-speed="1800">
+      <header class="scene-head">
+        <span class="scene-num">06</span>
+        <h2><code>ENTRYPOINT</code> 형식 하나로 <em>무중단 배포가 깨진다</em></h2>
+        <p class="scene-lead">
+          shell 형식으로 쓰면 <b>PID 1은 셸</b>이 되고, 셸은 SIGTERM을 앱에 전달하지 않습니다.
+          앱은 종료 신호를 못 받고 <b><code>terminationGracePeriodSeconds</code>(기본 30초)가 지나면 SIGKILL로 강제 종료</b>됩니다.
+          처리 중인 요청은 끊깁니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="split">
+          <div class="pane bad">
+            <h4>❌ shell 형식</h4>
+            <pre class="code" style="margin:0 0 12px"><span class="k">ENTRYPOINT</span> /app/server
+<span class="c"># 실제로는 /bin/sh -c "/app/server" 로 실행된다</span></pre>
+            <div class="flowv">
+              <div class="fstep" data-from="1"><span class="no">1</span><span class="sig">PID 1 = <b>/bin/sh</b>, 앱은 자식 프로세스</span></div>
+              <div class="fstep" data-from="2"><span class="no">2</span><span class="sig">kubelet → <b>SIGTERM</b> → PID 1 (셸)</span></div>
+              <div class="fstep fail" data-from="3"><span class="no">3</span><span class="sig">셸은 <b>자식에게 전달하지 않는다</b></span></div>
+              <div class="fstep fail" data-from="4"><span class="no">4</span><span class="sig">앱은 계속 요청을 처리 중… 아무 일도 안 일어남</span></div>
+              <div class="fstep fail" data-from="5"><span class="no">5</span><span class="sig">30초 후 <b>SIGKILL</b> → 강제 종료</span></div>
+              <div class="fstep fail" data-from="6"><span class="no">!</span><span class="sig" style="color:var(--rose)">처리 중이던 요청 전부 끊김 → <b>502</b></span></div>
+            </div>
+          </div>
+
+          <div class="pane good">
+            <h4>✅ exec 형식</h4>
+            <pre class="code" style="margin:0 0 12px"><span class="k">ENTRYPOINT</span> [<span class="s">"/app/server"</span>]
+<span class="c"># 앱이 직접 PID 1이 된다</span></pre>
+            <div class="flowv">
+              <div class="fstep" data-from="1"><span class="no">1</span><span class="sig">PID 1 = <b>/app/server</b></span></div>
+              <div class="fstep" data-from="2"><span class="no">2</span><span class="sig">kubelet → <b>SIGTERM</b> → 앱이 직접 받는다</span></div>
+              <div class="fstep" data-from="3"><span class="no">3</span><span class="sig">새 요청 수신 중단, 헬스체크 실패로 전환</span></div>
+              <div class="fstep" data-from="4"><span class="no">4</span><span class="sig">진행 중인 요청을 <b>끝까지 처리</b></span></div>
+              <div class="fstep" data-from="5"><span class="no">5</span><span class="sig">DB 커넥션·큐 컨슈머 정리 후 자발적 종료</span></div>
+              <div class="fstep done" data-from="6"><span class="no">✓</span><span class="sig" style="color:var(--green)">끊긴 요청 <b>0건</b></span></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:16px" data-from="6">
+          <pre class="code"><span class="c">// Go / Echo — graceful shutdown</span>
+<span class="k">func</span> main() {
+    e := echo.New()
+    <span class="c">// … 라우팅 …</span>
+
+    <span class="k">go</span> <span class="k">func</span>() {
+        <span class="k">if</span> err := e.Start(<span class="s">":8080"</span>); err != <span class="k">nil</span> && err != http.ErrServerClosed {
+            e.Logger.Fatal(err)
+        }
+    }()
+
+    quit := make(<span class="k">chan</span> os.Signal, <span class="n">1</span>)
+    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)   <span class="c">// ← 신호를 받는다</span>
+    &lt;-quit
+
+    ctx, cancel := context.WithTimeout(context.Background(), <span class="n">20</span>*time.Second)
+    <span class="k">defer</span> cancel()
+    <span class="k">if</span> err := e.Shutdown(ctx); err != <span class="k">nil</span> {          <span class="c">// ← 진행 중 요청을 기다린다</span>
+        e.Logger.Error(err)
+    }
+}</pre>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>shell 형식은 실제로 <code>/bin/sh -c</code>로 감싸서 실행됩니다. 그래서 <b>PID 1은 셸</b>이고 앱은 그 자식입니다.</p>
+        <p data-cap="2"><span class="k">02</span>파드를 종료할 때 kubelet은 <b>PID 1에게 SIGTERM</b>을 보냅니다.</p>
+        <p data-cap="3"><span class="k">03</span>셸은 그 신호를 자식에게 전달하지 않습니다. <b>앱은 아무것도 모릅니다.</b></p>
+        <p data-cap="4"><span class="k">04</span>앱은 계속 요청을 처리하고 있고, 정리할 기회를 못 얻습니다.</p>
+        <p data-cap="5"><span class="k">05</span><code>terminationGracePeriodSeconds</code>가 지나면 <b>SIGKILL</b>이 옵니다. 이건 무시할 수 없습니다.</p>
+        <p data-cap="6"><span class="k">06</span>결과는 <b>끊긴 요청과 502</b>입니다. exec 형식이면 앱이 직접 신호를 받아 정리하고 나갑니다. 코드는 20줄이면 됩니다.</p>
+      </div>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>이건 "무중단 배포인데 502가 났다"의 원인 후보 중 하나입니다.</b></p>
+          <p>
+            나머지 후보는 <b>readinessProbe 부재</b>, <b>preStop 부재로 인한 엔드포인트 전파 지연</b>입니다.
+            SIGTERM을 받는 것만으로는 부족해서, LB가 파드를 목록에서 빼는 데 걸리는 수 초를
+            <code>preStop: sleep 5~15</code>로 벌어줘야 합니다.
+            자세한 순서는 <a href="./deployment.html#s6">배포 편 preStop 장면</a>에 있습니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 07 함께 쓴다 ============ -->
+    <section class="scene" id="s7" data-scene="together" data-steps="4" data-speed="1900">
+      <header class="scene-head">
+        <span class="scene-num">07</span>
+        <h2>둘은 대체 관계가 아니다 — <em>컨테이너는 VM 위에서 돈다</em></h2>
+        <p class="scene-lead">
+          "컨테이너가 VM을 대체했다"고 답하면 감점입니다.
+          클라우드에서 컨테이너는 <b>거의 항상 VM(EC2) 위</b>에서 돕니다.
+        </p>
+      </header>
+
+      <div class="stage">
+        <div class="col-flex" style="gap:10px">
+          <div class="txbox" data-from="1">
+            <span class="tag">AWS 계정 / VPC</span>
+            <div class="col-flex" style="gap:10px">
+              <div class="txbox live" data-from="2">
+                <span class="tag">EC2 인스턴스 (VM) · EKS 워커 노드 · AZ-a</span>
+                <div class="pods" data-from="3">
+                  <div class="pod new">api-1<small>컨테이너</small></div>
+                  <div class="pod new">api-2<small>컨테이너</small></div>
+                  <div class="pod old">worker<small>컨테이너</small></div>
+                </div>
+              </div>
+              <div class="txbox live" data-from="4">
+                <span class="tag">EC2 인스턴스 (VM) · EKS 워커 노드 · AZ-c</span>
+                <div class="pods">
+                  <div class="pod new">api-3<small>컨테이너</small></div>
+                  <div class="pod boot">api-4<small>기동 중</small></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="row-flex center" style="margin-top:16px;gap:8px">
+          <span class="lbl cyan" data-at="2">VM은 <b>노드</b> 단위 격리와 용량을 담당한다</span>
+          <span class="lbl green" data-at="3">컨테이너는 <b>배포</b> 단위와 밀도를 담당한다</span>
+          <span class="lbl violet" data-at="4">노드가 부족하면 VM을 늘리고(Cluster Autoscaler), 부하가 늘면 파드를 늘린다(HPA)</span>
+        </div>
+
+        <div style="margin-top:16px" data-from="4">
+          <table class="tbl">
+            <caption>VM이 여전히 필요한 경우</caption>
+            <tbody>
+              <tr><td>강한 격리가 필요한 멀티테넌시</td><td>남의 코드를 돌린다면 커널 공유는 위험하다</td></tr>
+              <tr><td>다른 OS 커널이 필요</td><td>Windows 워크로드, 특정 커널 모듈</td></tr>
+              <tr><td>커널 파라미터를 직접 조정</td><td>컨테이너는 호스트 커널을 공유하므로 제약이 있다</td></tr>
+              <tr><td>규제 / 컴플라이언스</td><td>물리적 분리 수준의 격리 증명이 요구되는 경우</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="captions">
+        <p data-cap="1"><span class="k">01</span>클라우드 계정 안에 VPC가 있고, 그 안에 서브넷과 인스턴스가 있습니다(<a href="./vpc.html">VPC 편</a>).</p>
+        <p data-cap="2"><span class="k">02</span>EKS 워커 노드는 <b>EC2 인스턴스, 즉 VM</b>입니다.</p>
+        <p data-cap="3"><span class="k">03</span>그 VM 위에 <b>컨테이너(파드)</b>가 여러 개 뜹니다. VM은 용량, 컨테이너는 배포 단위입니다.</p>
+        <p data-cap="4"><span class="k">04</span>확장도 두 층입니다 — <b>파드는 HPA로, 노드는 Cluster Autoscaler로</b> 늘립니다. 그래서 "대체"가 아니라 <b>계층</b>입니다.</p>
+      </div>
+    </section>
+
+    <!-- ============ 실무 함정 ============ -->
+    <section class="scene" id="s8">
+      <header class="scene-head">
+        <span class="scene-num">함정</span>
+        <h2>실무에서 챙기는 것 — 여기서 깊이가 갈린다</h2>
+      </header>
+
+      <table class="tbl">
+        <thead><tr><th>항목</th><th>내용</th></tr></thead>
+        <tbody>
+          <tr class="hit"><td>컨테이너는 stateless</td><td>로컬 디스크에 파일 저장 금지. 볼륨이나 S3를 쓴다</td></tr>
+          <tr><td>로그는 stdout으로</td><td>파일에 쓰면 컨테이너가 죽을 때 사라진다. 수집기가 stdout을 읽는다</td></tr>
+          <tr><td>1 컨테이너 1 프로세스</td><td>앱과 Nginx를 한 컨테이너에 넣지 않는다. 사이드카나 Ingress로 분리</td></tr>
+          <tr><td>root로 실행 금지</td><td><code>USER appuser</code>. 컨테이너 탈출 시 피해를 줄인다</td></tr>
+          <tr class="locked"><td><code>latest</code> 태그 금지</td><td>롤백 대상이 사라지고, 무엇이 떴는지 알 수 없다. 커밋 SHA를 쓴다</td></tr>
+          <tr><td>멀티 스테이지 빌드</td><td>800MB → 20MB. 최종 이미지에 컴파일러·소스를 남기지 않는다</td></tr>
+          <tr class="locked"><td>PID 1 시그널</td><td><code>ENTRYPOINT</code>를 <b>exec 형식</b>으로. 아니면 graceful shutdown이 동작하지 않는다</td></tr>
+          <tr><td>타임존 / CA 인증서</td><td><code>alpine</code>·<code>scratch</code>에는 없다. <code>tzdata</code>, <code>ca-certificates</code> 설치</td></tr>
+          <tr><td>시크릿을 이미지에 넣지 않기</td><td>레이어 히스토리에 남는다. 환경 변수 / Secrets Manager로 주입</td></tr>
+          <tr><td>리소스 limit과 런타임</td><td>cgroup limit을 못 읽으면 호스트 전체 사양으로 오인한다 (<code>GOMAXPROCS</code>)</td></tr>
+          <tr><td>SSH를 넣지 않기</td><td><code>kubectl exec</code>를 쓴다. 컨테이너는 디버깅 대상이 아니라 교체 대상이다</td></tr>
+          <tr><td><code>.dockerignore</code></td><td><code>.git</code>, <code>node_modules</code>를 빌드 컨텍스트에서 뺀다. 빌드가 빨라지고 유출을 막는다</td></tr>
+        </tbody>
+      </table>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>Docker와 Kubernetes의 관계도 자주 묻습니다.</b></p>
+          <p>
+            <b>Docker는 컨테이너를 만들고 실행하는 도구</b>이고,
+            <b>Kubernetes는 그 컨테이너를 여러 노드에 배치·복구·확장하는 오케스트레이터</b>입니다.
+            층이 다릅니다. K8s는 1.24부터 dockershim을 제거해서
+            런타임으로 <b>containerd</b>를 씁니다.
+            다만 <b>Docker가 만든 이미지는 OCI 표준</b>이라 그대로 돕니다.
+            "Docker를 안 쓰는데 Docker 이미지가 도나요?"라는 질문의 답이 이것입니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 정리 ============ -->
+    <section class="scene" id="s9">
+      <header class="scene-head">
+        <span class="scene-num">정리</span>
+        <h2>이 7장면을 한 문단으로</h2>
+      </header>
+
+      <div class="stage" style="min-height:auto">
+        <p style="margin:0;font-size:15px;line-height:1.95;color:var(--ink-2)">
+          가장 큰 차이는 <b style="color:var(--ink)">커널을 공유하는지</b>입니다.
+          VM은 게스트 OS와 커널을 따로 올려서 GB·분 단위지만 <b style="color:var(--amber)">격리가 강하고</b>,
+          컨테이너는 호스트 커널을 공유하면서
+          <b style="color:var(--cyan)">namespace로 격리, cgroup으로 제한, OverlayFS로 레이어</b>를 만들어
+          MB·초 단위가 되지만 <b style="color:var(--rose)">격리는 상대적으로 약합니다.</b>
+          Docker를 쓰는 첫 번째 이유는 <b style="color:var(--green)">환경 일관성</b>이고,
+          거기서 배포 단위 표준화·태그 기반 즉시 롤백·빠른 Scale-out·오케스트레이션이 따라옵니다.
+          이미지는 불변 레이어, 컨테이너는 그 위의 쓰기 레이어라서
+          <b>상태는 볼륨·S3·RDS로 빼야</b> 하고,
+          Dockerfile은 <b>자주 바뀌는 것을 뒤에</b> 둬야 캐시가 삽니다.
+          그리고 <b style="color:var(--rose)"><code>ENTRYPOINT</code>를 exec 형식으로 쓰지 않으면
+          SIGTERM이 앱에 도달하지 않아 무중단 배포가 깨집니다.</b>
+          마지막으로 컨테이너는 VM을 대체한 게 아니라 <b>VM 위에서 돕니다.</b>
+        </p>
+      </div>
+
+      <h3 style="font-size:15px;margin:22px 0 12px">자주 하는 실수</h3>
+      <ul class="checklist">
+        <li>"컨테이너는 가벼운 VM"이라고 설명한다 → <b>격리된 프로세스</b>다. 이 차이가 질문의 핵심</li>
+        <li>"Docker를 쓰면 편해요"로 끝낸다 → <b>환경 일관성</b>이라는 단어를 반드시 쓴다</li>
+        <li>컨테이너가 VM을 대체했다고 말한다 → <b>함께 쓰인다.</b> EKS 노드는 EC2다</li>
+        <li>격리가 약하다는 단점을 모른다 → 트레이드오프를 아는 게 신뢰를 만든다</li>
+        <li>namespace / cgroup을 모른다 → 이 두 단어가 "이해했다"의 증거다</li>
+        <li>이미지 안에 커널이 있다고 생각한다 → <b>유저 공간 파일들</b>이다</li>
+        <li>레이어 캐시 순서를 모른다 → 매일 체감되는 실무 포인트다</li>
+      </ul>
+
+      <div class="insight">
+        <span class="ico">💡</span>
+        <div>
+          <p><b>원문 노트</b></p>
+          <p>
+            질문별 30초 답변과 꼬리질문 체크리스트는 <a href="../infra.md">infra.md</a> 4번에 있습니다.
+            Dockerfile과 배포 파이프라인은 <a href="../deployment.md">deployment.md</a>에서 이어집니다.
+          </p>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <div class="wrap pager">
+    <a href="./scaling.html"><small>← 이전</small>06 스케일</a>
+    <a class="next" href="./vpc.html"><small>다음 →</small>08 VPC</a>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap row-flex">
+    <span>원문 노트: <a href="../infra.md">infra.md</a> · <a href="../deployment.md">deployment.md</a></span>
+    <span>기준: Docker / containerd · Kubernetes(EKS) · Go 1.23 / alpine</span>
+  </div>
+</footer>
+
+<script src="./assets/scene.js"></script>
+<script>
+(function () {
+  function watch(name, fn) {
+    var sc = document.querySelector('[data-scene="' + name + '"]');
+    if (!sc) return;
+    fn(0);
+    new MutationObserver(function () {
+      fn(parseInt(sc.dataset.step || '0', 10));
+    }).observe(sc, { attributes: true, attributeFilter: ['data-step'] });
+  }
+
+  /* 01 커널 계층 강조 */
+  watch('stack', function (step) {
+    ['g1', 'g2'].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.className = 'sl guest' + (step === 2 || step === 4 ? ' flag' : '');
+    });
+    var sh = document.getElementById('shared');
+    if (sh) sh.className = 'sl kernel' + (step === 2 || step === 4 ? ' flag' : '');
+  });
+
+  /* 02 부팅 시간 / 크기 막대 */
+  function bar(id, w, label, text) {
+    var b = document.getElementById(id);
+    if (b) b.style.width = w + '%';
+    var v = document.getElementById(label);
+    if (v) v.textContent = text;
+  }
+  watch('weight', function (step) {
+    if (step >= 1) {
+      bar('b-vmboot', 100, 'v-vmboot', '~60초');
+      bar('b-ctboot', 3, 'v-ctboot', '~0.5초');
+    } else {
+      bar('b-vmboot', 0, 'v-vmboot', '–');
+      bar('b-ctboot', 0, 'v-ctboot', '–');
+    }
+    if (step >= 2) {
+      bar('b-vmsz', 100, 'v-vmsz', '~8GB');
+      bar('b-golang', 10, 'v-golang', '~810MB');
+      bar('b-multi', 1, 'v-multi', '~19MB');
+    } else {
+      bar('b-vmsz', 0, 'v-vmsz', '–');
+      bar('b-golang', 0, 'v-golang', '–');
+      bar('b-multi', 0, 'v-multi', '–');
+    }
+  });
+
+  /* 03 세 기능 순차 강조
+     주의: scene.js가 data-from 요소에 'on'을 붙이므로 className을 통째로 덮어쓰면 안 된다 */
+  watch('isolate', function (step) {
+    [['f-ns', 1], ['f-cg', 2], ['f-fs', 3]].forEach(function (p) {
+      var el = document.getElementById(p[0]);
+      if (!el) return;
+      el.classList.toggle('done', step > p[1]);
+    });
+  });
+
+  /* 04 레이어 캐시 상태 */
+  watch('layer', function (step) {
+    var map;
+    if (step === 2) map = { l1: 'cached', l2: 'cached', l3: 'rebuilt', l4: 'rebuilt' };
+    else if (step === 3) map = { l1: 'cached', l2: 'rebuilt', l3: 'rebuilt', l4: 'rebuilt' };
+    else map = { l1: '', l2: '', l3: '', l4: '' };
+    Object.keys(map).forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.className = 'lay ' + map[id];
+    });
+  });
+})();
+</script>
+</body>
+</html>

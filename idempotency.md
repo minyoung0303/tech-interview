@@ -203,7 +203,7 @@ Redis는 DB 부하를 줄이는 앞단 필터로 쓰는 게 올바른 역할 분
 
 ## 5. 트랜잭션 경계 설계 — 외부 API가 끼어들 때
 
-[01-transaction.md](./01-transaction.md) 6번과 직접 이어지는 내용이다.
+[transaction.md](./transaction.md) 6번과 직접 이어지는 내용이다.
 
 ### 문제
 
