@@ -1,3 +1,14 @@
+---
+topic: database
+title: 인덱스
+level: core
+status: done
+confidence: 3
+last_reviewed: 2026-09-14
+tags: [B+Tree, 클러스터드, 커버링, 복합인덱스, EXPLAIN]
+asked_at: [아름다운가게]
+---
+
 # 인덱스 (Index)
 
 > 기준: MySQL 8.x / InnoDB

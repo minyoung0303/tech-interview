@@ -1,3 +1,14 @@
+---
+topic: database
+title: 트랜잭션
+level: core
+status: done
+confidence: 3
+last_reviewed: 2026-09-14
+tags: [ACID, 격리수준, MVCC, 락, 데드락]
+asked_at: [아름다운가게]
+---
+
 # 트랜잭션 (Transaction)
 
 > 기준: MySQL 8.x / InnoDB, Go `database/sql`
@@ -248,7 +259,7 @@ tx2: 결과로 상태 업데이트 후 커밋
      → 미확정 건은 배치로 PG에 조회해서 정합 맞춤 (reconciliation)
 ```
 
-이 패턴은 [idempotency.md](./idempotency.md)에서 이어진다.
+이 패턴은 [idempotency.md](../backend/idempotency.md)에서 이어진다.
 
 ### (2) 트랜잭션 범위를 최소화한다
 

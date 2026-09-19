@@ -1,3 +1,14 @@
+---
+topic: backend
+title: 결제 멱등성
+level: plus
+status: done
+confidence: 2
+last_reviewed: 2026-09-14
+tags: [Idempotency-Key, 유니크제약, 경쟁상태, 웹훅, SQS]
+asked_at: []
+---
+
 # 결제 멱등성 (Idempotency)
 
 > 기준: MySQL 8.x, Redis, AWS SQS, Go/Echo, PG(토스페이먼츠/포트원 등)
@@ -203,7 +214,7 @@ Redis는 DB 부하를 줄이는 앞단 필터로 쓰는 게 올바른 역할 분
 
 ## 5. 트랜잭션 경계 설계 — 외부 API가 끼어들 때
 
-[transaction.md](./transaction.md) 6번과 직접 이어지는 내용이다.
+[transaction.md](../database/transaction.md) 6번과 직접 이어지는 내용이다.
 
 ### 문제
 
