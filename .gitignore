@@ -11,7 +11,14 @@ desktop.ini
 .idea/
 *.swp
 
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
 # logs / temp
 *.log
 _tmp*
 ._tmp*
+_migrate*
