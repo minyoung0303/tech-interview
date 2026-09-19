@@ -1,3 +1,14 @@
+---
+topic: infra
+title: 인프라 9문항
+level: core
+status: done
+confidence: 2
+last_reviewed: 2026-09-14
+tags: [로드밸런서, ScaleOut, WebWAS, Docker, VPC, 무중단배포, 샤딩, JWT]
+asked_at: []
+---
+
 # 인프라 (Infrastructure)
 
 > 기준: AWS(VPC, ALB/NLB, EKS, RDS, ElastiCache) / Docker / Kubernetes / Nginx / MySQL 8
@@ -6,7 +17,7 @@
 > **이 파일의 사용법**
 > 1. 각 질문의 **0번 "30초 답변"만 먼저 외운다.** 9개 × 30초 = 5분이면 1차 방어선이 생긴다
 > 2. 그다음 **꼬리질문 체크리스트**를 훑으면서 막히는 걸 본문에서 찾아 읽는다
-> 3. 시각화가 필요하면 [visualize/](./visualize/index.html)로 간다
+> 3. 시각화가 필요하면 [visualize/](../../visualize/index.html)로 간다
 
 ---
 
@@ -14,15 +25,15 @@
 
 | # | 질문 | 시각화 |
 |---|---|---|
-| 1 | 로드 밸런서 L4와 L7의 차이 | [scaling.html#s3](./visualize/scaling.html#s3) |
-| 2 | Scale-up과 Scale-out의 차이 | [scaling.html#s1](./visualize/scaling.html#s1) |
-| 3 | Web과 WAS를 나눠 구성하는 이유 | [scaling.html#s4](./visualize/scaling.html#s4) |
-| 4 | Docker를 쓰는 이유와 VM과의 차이 | [container.html](./visualize/container.html) |
-| 5 | VPC란 무엇이며 Public/Private Subnet을 분리하는 이유 | [vpc.html](./visualize/vpc.html) |
-| 6 | 무중단 배포 방식 유형별 설명 | [deployment.html#s8](./visualize/deployment.html#s8) |
-| 7 | Read Replica와 샤딩의 차이 | [dbscale.html](./visualize/dbscale.html) |
-| 8 | Forward Proxy와 Reverse Proxy 차이 | [proxy.html](./visualize/proxy.html) |
-| 9 | 세션 인증과 JWT를 Scale-out 관점에서 비교 | [scaling.html#s6](./visualize/scaling.html#s6) |
+| 1 | 로드 밸런서 L4와 L7의 차이 | [scaling.html#s3](../../visualize/scaling.html#s3) |
+| 2 | Scale-up과 Scale-out의 차이 | [scaling.html#s1](../../visualize/scaling.html#s1) |
+| 3 | Web과 WAS를 나눠 구성하는 이유 | [scaling.html#s4](../../visualize/scaling.html#s4) |
+| 4 | Docker를 쓰는 이유와 VM과의 차이 | [container.html](../../visualize/container.html) |
+| 5 | VPC란 무엇이며 Public/Private Subnet을 분리하는 이유 | [vpc.html](../../visualize/vpc.html) |
+| 6 | 무중단 배포 방식 유형별 설명 | [deployment.html#s8](../../visualize/deployment.html#s8) |
+| 7 | Read Replica와 샤딩의 차이 | [dbscale.html](../../visualize/dbscale.html) |
+| 8 | Forward Proxy와 Reverse Proxy 차이 | [proxy.html](../../visualize/proxy.html) |
+| 9 | 세션 인증과 JWT를 Scale-out 관점에서 비교 | [scaling.html#s6](../../visualize/scaling.html#s6) |
 
 ---
 
@@ -182,7 +193,7 @@ L7 로드 밸런서는 리버스 프록시의 한 기능이다. 리버스 프록
 
 1. 배치를 별도 워커/K8s CronJob으로 분리한다 (정석)
 2. Redis 분산 락으로 한 대만 잡게 한다
-3. 처리 자체를 **멱등하게** 만든다 → [idempotency.md](./idempotency.md)
+3. 처리 자체를 **멱등하게** 만든다 → [idempotency.md](../backend/idempotency.md)
 
 ## 3. 어디까지 Scale-up으로 버티나
 
@@ -769,7 +780,7 @@ Canary는 "문제 없나?"를 보고, A/B는 "어느 쪽이 전환율이 높나?
 | **preStop + sleep** | 엔드포인트 전파(LB 등록 해제)가 끝나기 전에 파드가 죽어서 **502** |
 | **커넥션 드레이닝** | 종료 중인 서버로 새 요청이 계속 들어온다 |
 | **하위 호환 스키마** | 구 버전 파드가 없는 컬럼을 조회해서 **500 폭발** |
-| **멱등성** | LB나 클라이언트가 재시도할 때 **중복 처리** → [idempotency.md](./idempotency.md) |
+| **멱등성** | LB나 클라이언트가 재시도할 때 **중복 처리** → [idempotency.md](../backend/idempotency.md) |
 | **롤백 가능한 이미지 태그** | `latest`면 되돌릴 대상이 없다 |
 
 ### 502가 나는 전형적인 순서 (실무 서사로 쓸 수 있다)
@@ -1008,7 +1019,7 @@ MySQL 복제는 기본적으로 **비동기**다.
 # 8. Forward Proxy와 Reverse Proxy 차이점
 
 > 이 주제는 [proxy.md](./proxy.md)에 상세히 정리되어 있다. 여기서는 30초 답변과 체크리스트만 둔다.
-> 시각화: [visualize/proxy.html](./visualize/proxy.html)
+> 시각화: [visualize/proxy.html](../../visualize/proxy.html)
 
 ## 0. 30초 답변
 

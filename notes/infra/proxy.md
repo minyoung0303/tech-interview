@@ -1,3 +1,14 @@
+---
+topic: infra
+title: 프록시
+level: core
+status: done
+confidence: 3
+last_reviewed: 2026-09-14
+tags: [Forward, Reverse, L4, L7, XFF]
+asked_at: [아름다운가게]
+---
+
 # 프록시 (Forward Proxy / Reverse Proxy)
 
 > 기준: Nginx, AWS ALB/NLB/CloudFront, Kubernetes Ingress, Go/Echo
