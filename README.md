@@ -128,12 +128,21 @@ python algorithm/templates/run_all.py     # 템플릿 12개 자체 검증
 
 애니메이션 9개 주제, 66장면. [visualize/index.html](./visualize/index.html) 이 허브다.
 
-GitHub Pages 를 켜면 폰에서도 볼 수 있다 (**Settings → Pages → Source: main / root**).
-빌드 단계가 없으므로 켜기만 하면 끝이다.
-
 ```
 https://minyoung0303.github.io/tech-interview/visualize/
 ```
+
+**켜는 방법**: Settings → Pages → Source: `Deploy from a branch` → Branch: `main` / `/ (root)` → Save.
+빌드 단계가 없으므로 1~2분 뒤에 올라온다. GitHub Free 는 **public 저장소에서만** Pages 가 된다.
+
+**루트의 `.nojekyll` 은 지우면 안 된다.**
+GitHub Pages 는 기본으로 Jekyll 을 돌리는데, Jekyll 의 Liquid 엔진이 `{{ }}` 를 변수로 해석한다.
+`visualize/deployment.html` 과 `notes/infra/deployment.md` 의 GitHub Actions 예제에
+`${{ secrets.AWS_ROLE_ARN }}` 같은 표기가 있어서, Jekyll 을 끄지 않으면
+**빌드는 성공하는데 코드 예제가 빈 문자열로 치환된다.**
+
+`.nojekyll` 이 있으면 md 파일은 렌더링되지 않고 원문 그대로 제공된다.
+각 시각화 페이지 하단의 "원문 노트" 링크는 **GitHub 에서 읽는 용도**로 생각하면 된다.
 
 ---
 
