@@ -6,11 +6,18 @@
 
 ---
 
-## 오늘 할 일 (3줄)
+## 오늘 할 일
+
+**아침 (폰, 10분)** — 터미널 필요 없다. 브라우저만 있으면 된다.
+
+```
+<Pages URL>/visualize/quiz.html      ← 홈화면에 추가해두고 5문항
+```
+
+**저녁 (노트북, 2시간 + 마감 10분)** — 요일별로 다르다. [하루 루프](#하루-루프) 참고.
 
 ```bash
 python tools/review.py          # 오늘 복습할 노트
-python tools/quiz.py -n 5       # 꼬리질문 5문제 (소리 내어 답한다)
 python tools/check.py           # 커밋 전 정합성 검증
 ```
 
@@ -46,7 +53,8 @@ tools/          위 넷을 관리하는 스크립트 4개
 | `python tools/new.py <분류> <파일명>` | 정해진 포맷으로 새 노트 생성 |
 | `python tools/review.py` | 오늘 복습할 노트. `--all` 로 전체 현황 |
 | `python tools/review.py <경로> -c 4` | 복습 완료 기록 (`last_reviewed`, `confidence` 갱신) |
-| `python tools/quiz.py` | 꼬리질문 랜덤 출제. `--weak` 로 약한 것만 |
+| `python tools/quiz.py` | 꼬리질문 랜덤 출제(터미널). `--weak` 로 약한 것만 |
+| `python tools/build_quiz.py` | **폰용 퀴즈 페이지 데이터를 다시 굽는다.** 노트를 고쳤으면 실행 |
 
 ```bash
 # 예시
@@ -148,22 +156,48 @@ GitHub Pages 는 기본으로 Jekyll 을 돌리는데, Jekyll 의 Liquid 엔진�
 
 ## 하루 루프
 
-```
-아침 15분 (이동 중)
-  python tools/quiz.py -n 5
-  또는 폰으로 visualize 한 페이지의 "정리" 문단만 읽기
+2.5시간에 알고리즘과 CS를 둘 다 제대로 하는 건 안 된다. **요일로 쪼갠다.**
 
-저녁 2.5시간
-  0:00–0:20  알고리즘 재풀이        algorithm/wrong.md 의 D+1 / D+3 / D+7
-  0:20–1:50  알고리즘 새 문제        algorithm/plan.md Day N
-  1:50–2:20  CS 노트 1개 작성/보강   python tools/new.py <분류> <파일명>
-  2:20–2:30  복습 기록 + 검증 + 커밋
-             python tools/review.py <경로> -c 3
-             python tools/check.py
-             git add . && git commit -m "notes: ..."
+### 매일 고정 (20분) — 요일 무관
+
+```
+아침 10분 (폰, 이동 중)
+  <Pages URL>/visualize/quiz.html  에서 5문항
+  소리 내어 답한다. 막힌 건 "이건 막혔다" 를 눌러둔다
+  (터미널이 있으면  python tools/quiz.py -n 5  도 같은 문항)
+
+저녁 마감 10분 (노트북)
+  python tools/review.py <오늘 본 노트> -c 3     # 막혔으면 낮게 준다
+  python tools/check.py
+  git add . && git commit -m "notes: ..."
 ```
 
-커밋 자체가 학습 기록이 된다. 별도 트래커가 필요 없다.
+**커밋을 안 했으면 그날은 안 한 것이다.** 기록이 없으면 복습 큐가 계산되지 않는다.
+
+### 저녁 본 블록 (2시간) — 요일별
+
+| 요일 | 하는 일 |
+|---|---|
+| 월 · 화 · 목 · 금 | **알고리즘** — [algorithm/plan.md](./algorithm/plan.md) 의 Day N |
+| 수 | **CS 노트 1개** — `python tools/new.py <분류> <파일명>` → 다 쓰면 `python tools/build_quiz.py` |
+| 토 | **면접** — [interview/stories.md](./interview/stories.md) 서사 1개 + 소리 내어 2분 연습 |
+| 일 | **정산 1시간** — `python tools/review.py --all`, `python tools/quiz.py --weak`, 오답 노트 훑기 |
+
+Day 7과 Day 14는 일요일 대신 **모의 테스트 90분**이다.
+
+### 규칙 3개
+
+1. **하루 빠지면 몰아서 하지 않는다.** 다음 날 계획을 문제 1개로 줄여서 진행한다. 연속성이 총량보다 중요하다
+2. **한 문제에 20분.** 넘으면 해설을 보고, 대신 코드를 닫고 처음부터 다시 친다
+3. **`check.py` 가 빨간색이면 자기 전에 고친다.** 밀리면 다음 주에 원인을 못 찾는다
+
+### 우선순위를 바꿔야 하는 경우
+
+| 상황 | 조정 |
+|---|---|
+| **면접 날짜가 잡혔다** | 토요일 블록을 매일로. 알고리즘은 하루 1문제로 축소 |
+| 대기업 코딩테스트가 먼저다 | 수·토도 알고리즘. CS 는 아침 퀴즈만 유지 |
+| 중견 · 강소기업 위주 | CS 노트와 서사 비중을 올린다. 실무 경험 질문이 코테보다 무겁다 |
 
 ---
 

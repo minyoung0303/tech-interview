@@ -12,7 +12,8 @@ check.py — 레포 정합성 검증. CI 는 이 파일 하나만 돌린다
     4 태그    html 태그 균형
     5 노트    notes/**/*.md frontmatter 필수 키와 값 형식
     6 규약    status: done 인 노트에 "30초 답변", "꼬리질문" 섹션이 있는가
-    7 파이썬  algorithm/templates/*.py 자체 검증 통과
+    7 퀴즈    visualize/quiz-data.js 가 현재 노트와 일치하는가 (폰용 페이지 데이터)
+    8 파이썬  algorithm/templates/*.py 자체 검증 통과
 
 문제가 하나라도 있으면 exit 1.
 다른 도구보다 길지만, 레포가 썩는 걸 막는 유일한 장치라 한 파일에 모아둔다.
@@ -206,6 +207,24 @@ def check_notes():
 # 7 알고리즘 템플릿 자체 검증
 # ---------------------------------------------------------------------------
 
+def check_quiz_data():
+    """visualize/quiz-data.js 가 현재 노트와 일치하는지.
+
+    폰용 퀴즈 페이지는 이 파일을 읽는다. 노트를 고치고 다시 굽지 않으면
+    폰에서는 옛 문항이 나온다. 조용히 어긋나는 종류라 여기서 막는다.
+    """
+    import build_quiz
+
+    if not build_quiz.OUT.exists():
+        return [f"퀴즈 데이터 없음  {rel(build_quiz.OUT)}  "
+                f"(python tools/build_quiz.py)"]
+    expected = build_quiz.render(build_quiz.current_generated())
+    if read_text(build_quiz.OUT) != expected:
+        return ["퀴즈 데이터 낡음  노트와 quiz-data.js 가 다릅니다  "
+                "(python tools/build_quiz.py)"]
+    return []
+
+
 def check_python():
     problems = []
     templates = ROOT / "algorithm" / "templates"
@@ -235,6 +254,7 @@ def main() -> int:
         ("씬 정합성", check_scenes),
         ("html 태그", check_html_balance),
         ("노트 규약", check_notes),
+        ("퀴즈 데이터", check_quiz_data),
     ]
     if not args.skip_python:
         stages.append(("파이썬 템플릿", check_python))

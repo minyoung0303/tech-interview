@@ -9,6 +9,10 @@ quiz.py — 노트의 꼬리질문 체크리스트를 랜덤 출제한다
     python tools/quiz.py --list             출제 없이 목록만
     python tools/quiz.py --auto             Enter 안 기다리고 답까지 바로 출력
 
+폰에서 하려면 터미널 대신 브라우저를 쓴다 (같은 문항, 같은 소스)
+    <Pages URL>/visualize/quiz.html
+    노트를 고쳤으면  python tools/build_quiz.py  로 데이터를 다시 굽는다
+
 읽는 것과 답하는 것은 효과가 다르다. 노트를 다시 읽지 말고 이걸 돌린다.
 
 출제 소스
@@ -19,36 +23,9 @@ quiz.py — 노트의 꼬리질문 체크리스트를 랜덤 출제한다
 
 import argparse
 import random
-import re
 import sys
 
-from _common import iter_notes, rel
-
-HEADING = re.compile(r"^(#{1,6})[^\n]*꼬리질문[^\n]*$", re.MULTILINE)
-ANY_HEADING = re.compile(r"^#{1,6} ", re.MULTILINE)
-ITEM = re.compile(r"^\s*-\s*\[[ xX]\]\s*(.+?)\s*$", re.MULTILINE)
-CLEAN = re.compile(r"[*`]")
-
-
-def extract(body: str, source: str):
-    """꼬리질문 섹션에서 (질문, 힌트, 출처) 를 뽑는다."""
-    out = []
-    for head in HEADING.finditer(body):
-        start = head.end()
-        nxt = ANY_HEADING.search(body, start)
-        section = body[start:nxt.start() if nxt else len(body)]
-        for raw in ITEM.findall(section):
-            line = CLEAN.sub("", raw).strip()
-            if not line:
-                continue
-            question, hint = line, ""
-            m = re.search(r"\(\s*→\s*(.+?)\)\s*$", line)
-            if m:
-                question = line[:m.start()].strip()
-                hint = m.group(1).strip()
-            if question:
-                out.append((question, hint, source))
-    return out
+from _common import extract_questions, iter_notes, rel
 
 
 def collect(topic=None, weak=False):
@@ -60,7 +37,9 @@ def collect(topic=None, weak=False):
             continue
         if weak and meta.get("confidence", 1) > 2:
             continue
-        pool.extend(extract(body, rel(path)))
+        source = rel(path)
+        for question, hint in extract_questions(body):
+            pool.append((question, hint, source))
     return pool
 
 

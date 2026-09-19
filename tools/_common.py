@@ -99,3 +99,36 @@ def iter_notes():
 def rel(path) -> str:
     """레포 기준 상대 경로를 슬래시로 출력한다."""
     return pathlib.Path(path).resolve().relative_to(ROOT).as_posix()
+
+
+# --------------------------------------------------------------------------
+# 꼬리질문 추출 — tools/quiz.py(터미널)와 tools/build_quiz.py(폰용 페이지)가
+# 같은 로직을 써야 하므로 여기 한 곳에만 둔다.
+# --------------------------------------------------------------------------
+
+_Q_HEADING = re.compile(r"^(#{1,6})[^\n]*꼬리질문[^\n]*$", re.MULTILINE)
+_ANY_HEADING = re.compile(r"^#{1,6} ", re.MULTILINE)
+_Q_ITEM = re.compile(r"^\s*-\s*\[[ xX]\]\s*(.+?)\s*$", re.MULTILINE)
+_Q_CLEAN = re.compile(r"[*`]")
+_Q_HINT = re.compile(r"\(\s*→\s*(.+?)\)\s*$")
+
+
+def extract_questions(body: str):
+    """'꼬리질문' 제목 아래의  - [ ] 질문 (→ 힌트)  를 (질문, 힌트) 목록으로."""
+    out = []
+    for head in _Q_HEADING.finditer(body):
+        start = head.end()
+        nxt = _ANY_HEADING.search(body, start)
+        section = body[start:nxt.start() if nxt else len(body)]
+        for raw in _Q_ITEM.findall(section):
+            line = _Q_CLEAN.sub("", raw).strip()
+            if not line:
+                continue
+            question, hint = line, ""
+            m = _Q_HINT.search(line)
+            if m:
+                question = line[:m.start()].strip()
+                hint = m.group(1).strip()
+            if question:
+                out.append((question, hint))
+    return out
