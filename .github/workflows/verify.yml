@@ -1,0 +1,23 @@
+name: verify
+
+# tools/check.py 하나만 돌린다. CI 를 복잡하게 만들지 않는 게 설계 원칙이다.
+# public 저장소라 Actions 사용량은 무료다.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # 외부 의존성이 없으므로 install 단계가 없다
+      - name: 정합성 검증
+        run: python tools/check.py
