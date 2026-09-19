@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0a0c11">
+<title>꼬리질문 퀴즈 — 백엔드 기술면접</title>
+<meta name="description" content="노트의 꼬리질문 체크리스트를 랜덤 출제합니다. 폰에서 이동 중에 소리 내어 답하는 용도입니다.">
+<link rel="stylesheet" href="./assets/base.css">
+<style>
+/* ==========================================================================
+   폰 우선. 터치 영역을 크게 잡고, 한 화면에 한 문제만 둔다.
+   ========================================================================== */
+.qwrap { width: min(680px, calc(100% - 28px)); margin-inline: auto; }
+
+.qhead { padding: 22px 0 14px; }
+.qhead h1 { margin: 0 0 6px; font-size: clamp(22px, 5vw, 30px); letter-spacing: -.02em; }
+.qhead p { margin: 0; font-size: 13.5px; color: var(--ink-3); }
+
+/* 필터 칩 — 가로 스크롤 */
+.filters {
+  display: flex; gap: 7px; overflow-x: auto; padding: 4px 0 14px;
+  scrollbar-width: none; -webkit-overflow-scrolling: touch;
+}
+.filters::-webkit-scrollbar { display: none; }
+.filters button {
+  flex: none; font: inherit; font-size: 13px; font-weight: 600;
+  padding: 8px 14px; border-radius: 999px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line-soft); color: var(--ink-2);
+  transition: all .2s;
+}
+.filters button[aria-pressed="true"] {
+  background: rgba(94,231,245,.1); border-color: rgba(94,231,245,.45); color: var(--cyan);
+}
+
+/* 문제 카드 */
+.qcard {
+  background: linear-gradient(170deg, var(--panel-2), var(--panel));
+  border: 1px solid var(--line-soft); border-radius: var(--r-lg);
+  padding: 22px 20px; position: relative; overflow: hidden;
+  min-height: 190px;
+  display: flex; flex-direction: column;
+}
+.qcard::after {
+  content: ""; position: absolute; inset: 0 0 auto; height: 3px;
+  background: linear-gradient(90deg, var(--cyan), var(--violet)); opacity: .55;
+}
+.qmeta { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.question {
+  margin: 0 0 18px; font-size: clamp(18px, 4.4vw, 23px); line-height: 1.55;
+  font-weight: 700; letter-spacing: -.02em; word-break: keep-all;
+}
+.question code { font-size: .88em; }
+
+.answer {
+  margin-top: auto;
+  border-top: 1px dashed var(--line);
+  padding-top: 14px;
+  animation: fade .3s var(--ease);
+}
+.answer.hidden { display: none; }
+@keyframes fade { from { opacity: 0; transform: translateY(5px); } }
+.answer .hint {
+  margin: 0 0 12px; font-size: 16px; line-height: 1.6; color: var(--green);
+  font-weight: 600;
+}
+.answer .nohint { color: var(--ink-3); font-weight: 500; font-size: 14.5px; }
+.answer .src { font-size: 13px; }
+
+/* 버튼 — 손가락으로 누르는 크기 */
+.acts { display: grid; gap: 10px; margin: 16px 0 0; }
+.acts button {
+  font: inherit; font-size: 16px; font-weight: 700;
+  padding: 16px 18px; border-radius: 14px; cursor: pointer;
+  border: 1px solid var(--line); background: var(--panel-2); color: var(--ink);
+  transition: all .18s; -webkit-tap-highlight-color: transparent;
+}
+.acts button:active { transform: scale(.985); }
+.acts button.primary { background: var(--cyan); border-color: var(--cyan); color: #04121a; }
+.acts .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.acts .ghost { font-size: 14px; padding: 13px 14px; color: var(--ink-2); }
+
+.status {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; flex-wrap: wrap;
+  margin: 16px 0 40px; font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+}
+.status b { color: var(--cyan); }
+
+.empty { padding: 30px 4px; color: var(--ink-2); font-size: 15px; line-height: 1.8; }
+.empty code { color: var(--cyan); }
+
+@media (max-width: 420px) {
+  .qcard { padding: 18px 16px; border-radius: 18px; }
+}
+</style>
+</head>
+<body>
+<a class="skip-link" href="#q">본문으로 건너뛰기</a>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="home" href="./index.html">visualize<span>/</span>backend</a>
+    <nav aria-label="주제 바로가기">
+      <a href="./quiz.html" aria-current="page">퀴즈</a>
+      <a href="./transaction.html">트랜잭션</a>
+      <a href="./db-index.html">인덱스</a>
+      <a href="./proxy.html">프록시</a>
+      <a href="./idempotency.html">멱등성</a>
+      <a href="./deployment.html">배포</a>
+      <a href="./scaling.html">스케일</a>
+      <a href="./container.html">컨테이너</a>
+      <a href="./vpc.html">VPC</a>
+      <a href="./dbscale.html">DB 확장</a>
+    </nav>
+  </div>
+</header>
+
+<main class="qwrap" id="q">
+  <div class="qhead">
+    <h1>꼬리질문 퀴즈</h1>
+    <p>읽지 말고 <b style="color:var(--ink-2)">소리 내어 답한다.</b> 막히면 그 노트를 저녁에 다시 본다.</p>
+  </div>
+
+  <div class="filters" id="filters" role="group" aria-label="출제 범위"></div>
+
+  <section class="qcard" id="card" aria-live="polite">
+    <div class="qmeta" id="meta"></div>
+    <p class="question" id="question">불러오는 중…</p>
+    <div class="answer hidden" id="answer">
+      <p class="hint" id="hint"></p>
+      <p class="src" id="src"></p>
+    </div>
+  </section>
+
+  <div class="acts">
+    <button class="primary" id="reveal" type="button">답 보기</button>
+    <div class="row2">
+      <button class="ghost" id="again" type="button">이건 막혔다</button>
+      <button class="ghost" id="next" type="button">다음 문제 →</button>
+    </div>
+  </div>
+
+  <div class="status">
+    <span>오늘 <b id="todayCount">0</b>문항 · 막힌 것 <b id="stuckCount">0</b></span>
+    <span id="poolInfo"></span>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap row-flex">
+    <span>문항은 <code>notes/**/*.md</code> 의 꼬리질문 체크리스트에서 자동 추출됩니다.</span>
+    <span id="genInfo"></span>
+  </div>
+</footer>
+
+<script src="./quiz-data.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var DATA = window.QUIZ_DATA || { items: [], notes: [], blob: '', generated: '' };
+  var KEY_TODAY = 'quiz.today';
+  var KEY_STUCK = 'quiz.stuck';
+  var KEY_FILTER = 'quiz.filter';
+
+  var el = function (id) { return document.getElementById(id); };
+  var filter = load(KEY_FILTER, 'all');
+  var pool = [];
+  var order = [];
+  var cursor = 0;
+  var current = null;
+
+  /* ---------- localStorage (없어도 동작하게 감싼다) ---------- */
+  function load(key, fallback) {
+    try {
+      var raw = localStorage.getItem(key);
+      return raw === null ? fallback : JSON.parse(raw);
+    } catch (e) { return fallback; }
+  }
+  function save(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
+  }
+
+  function today() { return new Date().toISOString().slice(0, 10); }
+
+  function todayStats() {
+    var s = load(KEY_TODAY, null);
+    if (!s || s.date !== today()) { s = { date: today(), count: 0 }; }
+    return s;
+  }
+  function bumpToday() {
+    var s = todayStats();
+    s.count += 1;
+    save(KEY_TODAY, s);
+    el('todayCount').textContent = s.count;
+  }
+
+  function stuckList() { return load(KEY_STUCK, []); }
+
+  /* ---------- 필터 ---------- */
+  function topics() {
+    var seen = {};
+    DATA.items.forEach(function (it) { seen[it.topic] = (seen[it.topic] || 0) + 1; });
+    return Object.keys(seen).sort();
+  }
+
+  function buildFilters() {
+    var box = el('filters');
+    var defs = [
+      { id: 'all', label: '전체' },
+      { id: 'weak', label: '약한 것' },
+      { id: 'stuck', label: '막혔던 것' }
+    ];
+    topics().forEach(function (t) { defs.push({ id: 't:' + t, label: t }); });
+
+    box.innerHTML = '';
+    defs.forEach(function (d) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = d.label;
+      b.setAttribute('aria-pressed', String(d.id === filter));
+      b.addEventListener('click', function () {
+        filter = d.id;
+        save(KEY_FILTER, filter);
+        buildFilters();
+        rebuild();
+      });
+      box.appendChild(b);
+    });
+  }
+
+  function applyFilter() {
+    if (filter === 'weak') {
+      return DATA.items.filter(function (it) { return (it.confidence || 1) <= 2; });
+    }
+    if (filter === 'stuck') {
+      var s = stuckList();
+      return DATA.items.filter(function (it) { return s.indexOf(it.q) !== -1; });
+    }
+    if (filter.indexOf('t:') === 0) {
+      var topic = filter.slice(2);
+      return DATA.items.filter(function (it) { return it.topic === topic; });
+    }
+    return DATA.items.slice();
+  }
+
+  /* ---------- 출제 ---------- */
+  function shuffle(arr) {
+    for (var i = arr.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+    return arr;
+  }
+
+  function rebuild() {
+    pool = applyFilter();
+    order = shuffle(pool.slice());
+    cursor = 0;
+    if (!pool.length) {
+      showEmpty();
+      return;
+    }
+    render();
+  }
+
+  function showEmpty() {
+    el('meta').innerHTML = '';
+    el('question').textContent = '이 범위에 문항이 없습니다.';
+    el('answer').classList.add('hidden');
+    el('poolInfo').textContent = '0문항';
+  }
+
+  function render() {
+    if (cursor >= order.length) {          // 한 바퀴 돌면 다시 섞는다
+      order = shuffle(pool.slice());
+      cursor = 0;
+    }
+    current = order[cursor];
+
+    var meta = el('meta');
+    meta.innerHTML = '';
+    [
+      { text: current.topic, cls: 'chip cyan' },
+      { text: current.title, cls: 'chip' },
+      { text: 'c' + (current.confidence || 1), cls: 'chip ' + ((current.confidence || 1) <= 2 ? 'rose' : 'green') }
+    ].forEach(function (m) {
+      var s = document.createElement('span');
+      s.className = m.cls;
+      s.textContent = m.text;
+      meta.appendChild(s);
+    });
+
+    el('question').textContent = current.q;
+
+    el('hint').className = current.hint ? 'hint' : 'hint nohint';
+    el('hint').textContent = current.hint
+      ? '→ ' + current.hint
+      : '(힌트가 없는 문항입니다. 노트를 열어 확인하세요.)';
+
+    // 문자열로 href 를 조립하지 않는다 (DOM API 가 안전하고, 링크 검사 도구도 오인하지 않는다)
+    var box = el('src');
+    box.textContent = '출처: ';
+    var a = document.createElement('a');
+    a.href = DATA.blob ? DATA.blob + current.src : '../' + current.src;
+    a.target = '_blank';
+    a.rel = 'noopener';
+    a.textContent = current.src;
+    box.appendChild(a);
+
+    el('answer').classList.add('hidden');
+    el('reveal').textContent = '답 보기';
+    el('poolInfo').textContent = (cursor + 1) + ' / ' + order.length + '문항';
+  }
+
+  function reveal() {
+    var a = el('answer');
+    if (a.classList.contains('hidden')) {
+      a.classList.remove('hidden');
+      el('reveal').textContent = '다음 문제 →';
+      bumpToday();
+    } else {
+      nextQuestion();
+    }
+  }
+
+  function nextQuestion() {
+    cursor += 1;
+    render();
+  }
+
+  function markStuck() {
+    if (!current) return;
+    var s = stuckList();
+    if (s.indexOf(current.q) === -1) {
+      s.push(current.q);
+      if (s.length > 200) s = s.slice(-200);
+      save(KEY_STUCK, s);
+    }
+    el('stuckCount').textContent = stuckList().length;
+    nextQuestion();
+  }
+
+  /* ---------- 초기화 ---------- */
+  if (!DATA.items.length) {
+    el('filters').innerHTML = '';
+    document.getElementById('card').innerHTML =
+      '<div class="empty">문항이 없습니다.<br><br>'
+      + '노트의 <b>꼬리질문 체크리스트</b>에 <code>- [ ] 질문 (→ 힌트)</code> 형식으로 채운 뒤'
+      + '<br><code>python tools/build_quiz.py</code> 를 실행하세요.</div>';
+  } else {
+    buildFilters();
+    rebuild();
+  }
+
+  el('todayCount').textContent = todayStats().count;
+  el('stuckCount').textContent = stuckList().length;
+  el('genInfo').textContent = DATA.generated
+    ? DATA.items.length + '문항 · ' + DATA.generated + ' 기준' : '';
+
+  el('reveal').addEventListener('click', reveal);
+  el('next').addEventListener('click', nextQuestion);
+  el('again').addEventListener('click', markStuck);
+
+  document.addEventListener('keydown', function (ev) {
+    if (ev.key === ' ' || ev.key === 'Enter') { ev.preventDefault(); reveal(); }
+    if (ev.key === 'ArrowRight') { ev.preventDefault(); nextQuestion(); }
+  });
+})();
+</script>
+</body>
+</html>
