@@ -1,47 +1,47 @@
 # tech-interview
 
-백엔드 개발자 취업 준비 저장소. **CS 지식 · 면접 아카이브 · 알고리즘 · 개념 시각화.**
+백엔드 저장소. **CS 지식 · 면접 아카이브 · 알고리즘 · 개념 시각화**
 
-> 이 파일은 저장소 사용 설명서다. 매일 저녁 여기서 시작한다.
+> 이 파일은 저장소 사용 설명서입니다. 매일 저녁 갱신됩니다.
 
 ---
 
 ## 오늘 할 일
 
-**아침 (폰, 10분)** — 터미널 필요 없다. 브라우저만 있으면 된다.
+**아침 (폰, 10분)** : 브라우저로 실행
 
 ```
 <Pages URL>/visualize/quiz.html      ← 홈화면에 추가해두고 5문항
 ```
 
-**저녁 (노트북, 2시간 + 마감 10분)** — 요일별로 다르다. [하루 루프](#하루-루프) 참고.
+**저녁 (노트북, 2시간 + 마감 10분)** : [하루 루프](#하루-루프) 참고.
 
 ```bash
 python tools/review.py          # 오늘 복습할 노트
 python tools/check.py           # 커밋 전 정합성 검증
 ```
 
-알고리즘은 [algorithm/plan.md](./algorithm/plan.md)의 Day N을 따라간다.
+알고리즘은 [algorithm/plan.md](./algorithm/plan.md)의 Day N 참고
 
 ---
 
 ## 구조
 
 ```
-notes/          CS 지식.      사람이 쓰고 사람이 읽는다. frontmatter 로 복습 상태를 관리한다
+notes/          CS 지식 repo      frontmatter 로 복습 상태 관리
   database/  network/  os/  ds-algo/  infra/  backend/  language/  etc/
-interview/      경험과 질문 아카이브. 가장 재사용 가치가 높은 데이터
+interview/      경험과 질문 아카이브 : 가장 재사용 가치가 높은 데이터
 algorithm/      2주 계획 · 치트시트 · 오답 노트 · 유형별 파이썬 템플릿
-visualize/      정적 HTML 애니메이션. GitHub Pages 로 서빙된다 (빌드 없음)
+visualize/      정적 HTML 애니메이션, GitHub Pages 로 serve
 tools/          위 넷을 관리하는 스크립트 4개
 ```
 
 ### 설계 원칙
 
-1. **표준 라이브러리만.** `pip install` 이 필요한 도구는 두지 않는다
-2. **`tools/` 가 없어도 저장소는 완전히 동작한다.** md는 md고 visualize는 정적 HTML이다
-3. **상태는 md의 frontmatter와 git 히스토리에만 있다.** 별도 DB나 상태 파일을 만들지 않는다
-4. **CI는 `tools/check.py` 하나만 호출한다**
+1. **표준 라이브러리만 다룬다.**
+2. **`tools/` 가 없어도 저장소는 완전히 동작한다.**
+3. **상태는 md의 frontmatter와 git 히스토리에만 있다.**
+4. **CI는 `tools/check.py` 하나만 호출중이다.**
 
 ---
 
@@ -49,26 +49,27 @@ tools/          위 넷을 관리하는 스크립트 4개
 
 | 명령 | 하는 일 |
 |---|---|
-| `python tools/check.py` | 링크·앵커·씬 정합성·html 태그·노트 규약·알고리즘 템플릿 검증. **커밋 전에 돌린다** |
+| `python tools/check.py` | 링크·앵커·씬 정합성·html 태그·노트 규약·알고리즘 템플릿 검증. **커밋 전에 돌리기** |
 | `python tools/new.py <분류> <파일명>` | 정해진 포맷으로 새 노트 생성 |
 | `python tools/review.py` | 오늘 복습할 노트. `--all` 로 전체 현황 |
 | `python tools/review.py <경로> -c 4` | 복습 완료 기록 (`last_reviewed`, `confidence` 갱신) |
-| `python tools/quiz.py` | 꼬리질문 랜덤 출제(터미널). `--weak` 로 약한 것만 |
-| `python tools/build_quiz.py` | **폰용 퀴즈 페이지 데이터를 다시 굽는다.** 노트를 고쳤으면 실행 |
+| `python tools/quiz.py` | 꼬리질문 랜덤 출제(터미널) / `--weak` 로 약한 것만 : 예시 답변 품질 개선중 |
+| `python tools/build_quiz.py` | **폰용 퀴즈 페이지 데이터를 다시 뽑기.** 노트를 고쳤다면 반영해야함 |
 
 ```bash
 # 예시
 python tools/new.py network http --title "HTTP"
 python tools/quiz.py --topic database -n 3
 python tools/review.py notes/database/transaction.md -c 4
-python tools/check.py --skip-python          # 빠르게
+python tools/check.py --skip-python
 ```
 
 ---
 
 ## 노트 규약
 
-`tools/new.py` 가 이 골격을 만들고 `tools/check.py` 가 검사한다.
+`tools/new.py`: 골격 생성 파일
+`tools/check.py` : 검사 파일
 
 ```markdown
 ---
@@ -84,13 +85,13 @@ asked_at: [회사명]        # 실제로 받은 질문이면 기록
 
 # 제목
 
-## 0. 30초 답변          ← 암기 대상. status: done 이면 필수
-## 1..N 상세
-## 꼬리질문 체크리스트    ← `- [ ] 질문 (→ 힌트)` 형식. quiz.py 가 출제한다
+## 0. 30초 답변         : 암기 대상, status: done 이면 필수 암기
+## 1. .N 상세
+## 꼬리질문 체크리스트   : `- [ ] 질문 (→ 힌트)` 형식, quiz.py 가 출제 진행
 ## 자주 하는 실수
 ```
 
-**복습 주기**는 `confidence` 로 정해진다.
+**복습 주기**는 `confidence` 로 정해둔다.
 
 | confidence | 1~2 | 3 | 4 | 5 |
 |---|---|---|---|---|
